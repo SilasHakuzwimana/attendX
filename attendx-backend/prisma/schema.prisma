@@ -1,0 +1,206 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  student
+  lecturer
+  admin
+}
+
+enum SessionStatus {
+  active
+  closed
+  expired
+}
+
+enum AttendanceStatus {
+  present
+  absent
+  excused
+  late
+}
+
+enum SubmissionMethod {
+  app
+  sms
+  manual
+}
+
+enum Platform {
+  android
+  ios
+  web
+}
+
+model User {
+  id        String   @id @default(uuid())
+  fullName  String
+  email     String   @unique
+  phone     String?  @unique
+  password  String
+  role      UserRole
+  regNumber String?  @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  taughtCourses       Course[]                @relation("LecturerCourses")
+  enrollments         Enrollment[]
+  sessions            Session[]               @relation("LecturerSessions")
+  roomCheckins        RoomCheckin[]
+  attendanceRecords   AttendanceRecord[]
+  devices             Device[]
+  notificationPref    NotificationPreference?
+  PasswordResetTokens PasswordResetToken[]
+}
+
+model Course {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  description String?
+  credits     Int      @default(3)
+  semester    String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lecturerId String
+  lecturer   User   @relation("LecturerCourses", fields: [lecturerId], references: [id])
+
+  sessions    Session[]
+  enrollments Enrollment[]
+}
+
+model Enrollment {
+  id         String   @id @default(uuid())
+  studentId  String
+  courseId   String
+  enrolledAt DateTime @default(now())
+
+  student User   @relation(fields: [studentId], references: [id])
+  course  Course @relation(fields: [courseId], references: [id])
+
+  @@unique([studentId, courseId])
+}
+
+model Classroom {
+  id        String   @id @default(uuid())
+  name      String
+  building  String?
+  capacity  Int?
+  latitude  Float
+  longitude Float
+  radiusM   Float    @default(30.0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  sessions Session[]
+}
+
+model Session {
+  id          String        @id @default(uuid())
+  sessionCode String        @unique
+  checkinOpen Boolean       @default(true)
+  status      SessionStatus @default(active)
+  startedAt   DateTime      @default(now())
+  expiresAt   DateTime
+  closedAt    DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  courseId    String
+  classroomId String
+  lecturerId  String
+
+  course    Course    @relation(fields: [courseId], references: [id])
+  classroom Classroom @relation(fields: [classroomId], references: [id])
+  lecturer  User      @relation("LecturerSessions", fields: [lecturerId], references: [id])
+
+  roomCheckins      RoomCheckin[]
+  attendanceRecords AttendanceRecord[]
+}
+
+model RoomCheckin {
+  id                String           @id @default(uuid())
+  sessionId         String
+  studentId         String
+  latitude          Float
+  longitude         Float
+  distanceM         Float?
+  deviceFingerprint String
+  submissionMethod  SubmissionMethod @default(app)
+  checkedInAt       DateTime         @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id])
+  student User    @relation(fields: [studentId], references: [id])
+
+  @@unique([sessionId, studentId])
+}
+
+model AttendanceRecord {
+  id               String            @id @default(uuid())
+  sessionId        String
+  studentId        String
+  status           AttendanceStatus
+  submissionMethod SubmissionMethod?
+  geofencePassed   Boolean?
+  markedAt         DateTime          @default(now())
+  overriddenAt     DateTime?
+  overriddenBy     String?
+  overrideReason   String?
+
+  session Session @relation(fields: [sessionId], references: [id])
+  student User    @relation(fields: [studentId], references: [id])
+}
+
+model Device {
+  id                String   @id @default(uuid())
+  userId            String
+  deviceFingerprint String   @unique
+  fcmToken          String?
+  platform          Platform
+  isActive          Boolean  @default(true)
+  registeredAt      DateTime @default(now())
+  lastSeenAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model NotificationPreference {
+  userId                 String  @id
+  attendanceConfirmation Boolean @default(true)
+  missedAttendance       Boolean @default(true)
+  absenceWarning         Boolean @default(true)
+  sessionStarted         Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model SystemConfig {
+  id                                 String   @id @default("singleton")
+  defaultGeofenceRadiusM             Float    @default(30.0)
+  sessionCodeTtlMinutes              Int      @default(90)
+  consecutiveAbsenceWarningThreshold Int      @default(2)
+  smsEnabled                         Boolean  @default(true)
+  emailNotificationsEnabled          Boolean  @default(true)
+  pushNotificationsEnabled           Boolean  @default(true)
+  updatedAt                          DateTime @updatedAt
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}

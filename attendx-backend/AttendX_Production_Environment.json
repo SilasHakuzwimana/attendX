@@ -1,0 +1,43 @@
+{
+  "id": "attendx-production",
+  "name": "AttendX API - Production",
+  "values": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.attendx.ac.rw/v1",
+      "enabled": true,
+      "type": "default"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "enabled": true,
+      "type": "secret"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "enabled": true,
+      "type": "secret"
+    },
+    {
+      "key": "studentEmail",
+      "value": "",
+      "enabled": true,
+      "type": "default"
+    },
+    {
+      "key": "lecturerEmail",
+      "value": "",
+      "enabled": true,
+      "type": "default"
+    },
+    {
+      "key": "adminEmail",
+      "value": "",
+      "enabled": true,
+      "type": "default"
+    }
+  ],
+  "_postman_variable_scope": "environment"
+}

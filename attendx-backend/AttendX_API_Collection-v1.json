@@ -1,0 +1,1078 @@
+{
+  "info": {
+    "name": "AttendX API - Attendance Flow",
+    "description": "Smart Hybrid Attendance Management System\n\nWorkflow:\n1. Register Users (Student, Lecturer, Admin)\n2. Student pre-checks in with GPS location\n3. Lecturer starts attendance session\n4. System validates attendance via geofence\n5. View history, analytics & manage settings",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "2.1.0"
+  },
+  "item": [
+    {
+      "name": "1. Auth (Register & Login)",
+      "description": "Step 1: Register users by role, then login",
+      "item": [
+        {
+          "name": "Register Student",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Registration successful', function() {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('studentToken', jsonData.data.token);",
+                  "    pm.environment.set('studentId', jsonData.data.user.id);",
+                  "    pm.environment.set('studentRegNumber', '2024/CS/001');",
+                  "    console.log('Student registered:', jsonData.data.user.fullName);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Alice Muwanguzi\",\n  \"email\": \"alice.student@attendx.com\",\n  \"phone\": \"+256700111222\",\n  \"password\": \"Student@123\",\n  \"role\": \"student\",\n  \"regNumber\": \"2024/CS/001\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Register Student 2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('student2Id', jsonData.data.user.id);",
+                  "    pm.environment.set('student2RegNumber', '2024/CS/002');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Bob Okello\",\n  \"email\": \"bob.student@attendx.com\",\n  \"phone\": \"+256700222333\",\n  \"password\": \"Student@123\",\n  \"role\": \"student\",\n  \"regNumber\": \"2024/CS/002\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Register Lecturer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('lecturerToken', jsonData.data.token);",
+                  "    pm.environment.set('lecturerId', jsonData.data.user.id);",
+                  "    console.log('Lecturer registered:', jsonData.data.user.fullName);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Dr. Robert Kyagulanyi\",\n  \"email\": \"robert.lecturer@attendx.com\",\n  \"phone\": \"+256701234567\",\n  \"password\": \"Lecturer@123\",\n  \"role\": \"lecturer\",\n  \"staffNumber\": \"LEC-2024-001\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Register Admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('adminToken', jsonData.data.token);",
+                  "    pm.environment.set('adminId', jsonData.data.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Sarah Kintu\",\n  \"email\": \"sarah.admin@attendx.com\",\n  \"phone\": \"+256702345678\",\n  \"password\": \"Admin@123!\",\n  \"role\": \"admin\",\n  \"staffNumber\": \"ADM-2024-001\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login as Student",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('accessToken', jsonData.data.token);",
+                  "    pm.environment.set('userId', jsonData.data.user.id);",
+                  "    pm.environment.set('userRole', 'student');",
+                  "    pm.environment.set('currentRegNumber', pm.environment.get('studentRegNumber'));",
+                  "    console.log('Logged in as Student');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"alice.student@attendx.com\",\n  \"password\": \"Student@123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Login as Lecturer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('accessToken', jsonData.data.token);",
+                  "    pm.environment.set('userId', jsonData.data.user.id);",
+                  "    pm.environment.set('userRole', 'lecturer');",
+                  "    console.log('Logged in as Lecturer');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"robert.lecturer@attendx.com\",\n  \"password\": \"Lecturer@123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Login as Admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('accessToken', jsonData.data.token);",
+                  "    pm.environment.set('userId', jsonData.data.user.id);",
+                  "    pm.environment.set('userRole', 'admin');",
+                  "    console.log('Logged in as Admin');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"sarah.admin@attendx.com\",\n  \"password\": \"Admin@123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Admin Setup (Classrooms & Courses)",
+      "description": "Admin creates classrooms with GPS coordinates and courses",
+      "item": [
+        {
+          "name": "Create Classroom - Lab 101",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success || jsonData.data) {",
+                  "    pm.environment.set('classroomId', jsonData.data.id);",
+                  "    console.log('Classroom created:', jsonData.data.name);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Computer Lab 101\",\n  \"building\": \"Science Block B\",\n  \"capacity\": 60,\n  \"latitude\": -1.9441,\n  \"longitude\": 30.0619,\n  \"radiusM\": 30.0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/classrooms",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "classrooms"]
+            }
+          }
+        },
+        {
+          "name": "Create Classroom - Lecture Hall",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success || jsonData.data) {",
+                  "    pm.environment.set('classroom2Id', jsonData.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Main Lecture Hall\",\n  \"building\": \"Humanities Block\",\n  \"capacity\": 200,\n  \"latitude\": -1.9450,\n  \"longitude\": 30.0625,\n  \"radiusM\": 50.0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/classrooms",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "classrooms"]
+            }
+          }
+        },
+        {
+          "name": "List Classrooms",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/classrooms",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "classrooms"]
+            }
+          }
+        },
+        {
+          "name": "Create Course",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success || jsonData.data) {",
+                  "    pm.environment.set('courseId', jsonData.data.id);",
+                  "    console.log('Course created:', jsonData.data.code);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"CS301\",\n  \"name\": \"Database Systems\",\n  \"description\": \"Advanced database concepts and design\",\n  \"credits\": 3,\n  \"semester\": \"2026-S1\",\n  \"lecturerId\": \"{{lecturerId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/courses",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "courses"]
+            }
+          }
+        },
+        {
+          "name": "Enroll Students in Course",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"studentIds\": [\"{{studentId}}\", \"{{student2Id}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/courses/{{courseId}}/enroll",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "courses", "{{courseId}}", "enroll"]
+            }
+          }
+        },
+        {
+          "name": "List Courses",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/courses",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "courses"]
+            }
+          }
+        },
+        {
+          "name": "System Configuration",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/system/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "system", "config"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Student Pre-Check-in",
+      "description": "Step 2: Student logs in and checks in BEFORE class with GPS location",
+      "item": [
+        {
+          "name": "Student Pre-Check-in (Within Geofence)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('checkinId', jsonData.data.checkinId);",
+                  "    console.log('Pre-check-in status:', jsonData.data.status);",
+                  "    console.log('Distance from classroom:', jsonData.data.distanceM, 'meters');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"regNumber\": \"{{studentRegNumber}}\",\n  \"latitude\": -1.9441,\n  \"longitude\": 30.0619,\n  \"deviceFingerprint\": \"android_device_abc123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/checkin",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "checkin"]
+            }
+          }
+        },
+        {
+          "name": "Student Pre-Check-in (Outside Geofence)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"regNumber\": \"{{student2RegNumber}}\",\n  \"latitude\": -1.9500,\n  \"longitude\": 30.0700,\n  \"deviceFingerprint\": \"iphone_device_xyz789\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/checkin",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "checkin"]
+            }
+          }
+        },
+        {
+          "name": "Get Check-in Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/checkin/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "checkin", "status"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Lecturer Starts Attendance Session",
+      "description": "Step 3: Lecturer creates session → System validates → Notifications sent",
+      "item": [
+        {
+          "name": "Start Attendance Session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.success) {",
+                  "    pm.environment.set('sessionId', jsonData.data.session.id);",
+                  "    pm.environment.set('sessionCode', jsonData.data.session.sessionCode);",
+                  "    console.log('Session Code:', jsonData.data.session.sessionCode);",
+                  "    console.log('Present:', jsonData.data.attendanceSummary.present);",
+                  "    console.log('Absent:', jsonData.data.attendanceSummary.absent);",
+                  "    console.log('Confirmations sent:', jsonData.data.notifications.confirmations);",
+                  "    console.log('Missed alerts:', jsonData.data.notifications.missedAlerts);",
+                  "    console.log('Urgent warnings:', jsonData.data.notifications.urgentWarnings);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"courseId\": \"{{courseId}}\",\n  \"classroomId\": \"{{classroomId}}\",\n  \"durationMinutes\": 90\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sessions",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sessions"]
+            }
+          }
+        },
+        {
+          "name": "Get Session Details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sessions/{{sessionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sessions", "{{sessionId}}"]
+            }
+          }
+        },
+        {
+          "name": "View Session Attendance List",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sessions/{{sessionId}}/attendance",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sessions", "{{sessionId}}", "attendance"]
+            }
+          }
+        },
+        {
+          "name": "Close Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/sessions/{{sessionId}}/close",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "sessions", "{{sessionId}}", "close"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Attendance Override & Validation",
+      "description": "Override attendance records manually",
+      "item": [
+        {
+          "name": "Override Attendance (Excuse Student)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"excused\",\n  \"reason\": \"Student provided valid medical certificate\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/attendance/{{attendanceId}}/override",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "attendance", "{{attendanceId}}", "override"]
+            }
+          }
+        },
+        {
+          "name": "Manual Validation Check",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/attendance/validate/{{sessionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "attendance", "validate", "{{sessionId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. History & Analytics",
+      "description": "View attendance history and analytics for all roles",
+      "item": [
+        {
+          "name": "My Attendance History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/history/my-attendance?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "history", "my-attendance"],
+              "query": [
+                {"key": "page", "value": "1"},
+                {"key": "limit", "value": "10"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "Course Attendance History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/history/course/{{courseId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "history", "course", "{{courseId}}"]
+            }
+          }
+        },
+        {
+          "name": "Session History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/history/sessions?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "history", "sessions"],
+              "query": [
+                {"key": "page", "value": "1"},
+                {"key": "limit", "value": "10"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "Personal Analytics Overview",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics/overview",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "analytics", "overview"]
+            }
+          }
+        },
+        {
+          "name": "Course Analytics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics/course/{{courseId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "analytics", "course", "{{courseId}}"]
+            }
+          }
+        },
+        {
+          "name": "At-Risk Students (2+ Absences)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics/at-risk?courseId={{courseId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "analytics", "at-risk"],
+              "query": [
+                {"key": "courseId", "value": "{{courseId}}"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "Attendance Trends",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/analytics/trends?weeks=8",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "analytics", "trends"],
+              "query": [
+                {"key": "weeks", "value": "8"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "Export Attendance Data",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/history/export?courseId={{courseId}}&format=csv",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "history", "export"],
+              "query": [
+                {"key": "courseId", "value": "{{courseId}}"},
+                {"key": "format", "value": "csv"}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Settings",
+      "description": "User settings, notifications & devices",
+      "item": [
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/settings/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "settings", "profile"]
+            }
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Alice Muwanguzi Updated\",\n  \"phone\": \"+256700999888\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/settings/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "settings", "profile"]
+            }
+          }
+        },
+        {
+          "name": "Get Notification Preferences",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/settings/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "settings", "notifications"]
+            }
+          }
+        },
+        {
+          "name": "Update Notification Preferences",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendanceConfirmation\": true,\n  \"missedAttendance\": true,\n  \"absenceWarning\": true,\n  \"sessionStarted\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/settings/notifications",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "settings", "notifications"]
+            }
+          }
+        },
+        {
+          "name": "Register Device for Push Notifications",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceFingerprint\": \"android_device_abc123\",\n  \"platform\": \"android\",\n  \"fcmToken\": \"fcm_token_from_firebase_123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/settings/devices",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "settings", "devices"]
+            }
+          }
+        },
+        {
+          "name": "List My Devices",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/settings/devices",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "settings", "devices"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health Check",
+      "item": [
+        {
+          "name": "Server Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {"key": "baseUrl", "value": "http://localhost:5000", "type": "string"},
+    {"key": "accessToken", "value": "", "type": "string"},
+    {"key": "userId", "value": "", "type": "string"},
+    {"key": "userRole", "value": "", "type": "string"},
+    {"key": "studentId", "value": "", "type": "string"},
+    {"key": "student2Id", "value": "", "type": "string"},
+    {"key": "studentRegNumber", "value": "2024/CS/001", "type": "string"},
+    {"key": "student2RegNumber", "value": "2024/CS/002", "type": "string"},
+    {"key": "lecturerId", "value": "", "type": "string"},
+    {"key": "adminId", "value": "", "type": "string"},
+    {"key": "studentToken", "value": "", "type": "string"},
+    {"key": "lecturerToken", "value": "", "type": "string"},
+    {"key": "adminToken", "value": "", "type": "string"},
+    {"key": "classroomId", "value": "", "type": "string"},
+    {"key": "classroom2Id", "value": "", "type": "string"},
+    {"key": "courseId", "value": "", "type": "string"},
+    {"key": "sessionId", "value": "", "type": "string"},
+    {"key": "sessionCode", "value": "", "type": "string"},
+    {"key": "checkinId", "value": "", "type": "string"},
+    {"key": "attendanceId", "value": "", "type": "string"},
+    {"key": "deviceId", "value": "", "type": "string"},
+    {"key": "currentRegNumber", "value": "", "type": "string"}
+  ]
+}

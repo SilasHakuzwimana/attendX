@@ -8,9 +8,9 @@ const { sendEmail } = require("../services/email.service");
 
 class AuthController {
   /**
-   * Generate JWT tokens
+   * Generate JWT tokens (static helper)
    */
-  generateTokens(userId, role) {
+  static generateTokens(userId, role) {
     const accessToken = jwt.sign({ userId, role }, config.jwt.secret, {
       expiresIn: config.jwt.accessExpiresIn,
     });
@@ -18,6 +18,39 @@ class AuthController {
       expiresIn: config.jwt.refreshExpiresIn,
     });
     return { accessToken, refreshToken };
+  }
+
+  /**
+   * Set secure cookies
+   */
+  static setTokenCookies(res, accessToken, refreshToken) {
+    const isProduction = config.nodeEnv === "production";
+
+    // Access token cookie (short-lived)
+    res.cookie("accessToken", accessToken, {
+      httpOnly: true, // Not accessible via JavaScript
+      secure: isProduction, // Only sent over HTTPS in production
+      sameSite: isProduction ? "strict" : "lax",
+      maxAge: config.jwt.accessExpiresIn * 1000, // Convert seconds to ms
+      path: "/",
+    });
+
+    // Refresh token cookie (longer-lived)
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "strict" : "lax",
+      maxAge: config.jwt.refreshExpiresIn * 1000,
+      path: "/api/v1/auth", // Only sent to auth endpoints
+    });
+  }
+
+  /**
+   * Clear cookies on logout
+   */
+  static clearTokenCookies(res) {
+    res.clearCookie("accessToken", { path: "/" });
+    res.clearCookie("refreshToken", { path: "/api/v1/auth" });
   }
 
   /**
@@ -102,7 +135,8 @@ class AuthController {
         });
       }
 
-      const { accessToken, refreshToken } = this.generateTokens(
+      // FIXED: Use static method call instead of this.generateTokens
+      const { accessToken, refreshToken } = AuthController.generateTokens(
         user.id,
         user.role,
       );
@@ -113,6 +147,8 @@ class AuthController {
         config.jwt.refreshExpiresIn,
         refreshToken,
       );
+
+      AuthController.setTokenCookies(res, accessToken, refreshToken);
 
       const { password: _, ...userWithoutPassword } = user;
 
@@ -141,6 +177,9 @@ class AuthController {
    */
   async refresh(req, res, next) {
     try {
+      // Get refresh token from cookie OR request body
+      const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
         return res.status(400).json({
@@ -153,7 +192,15 @@ class AuthController {
         });
       }
 
-      const { refreshToken } = req.body;
+      if (!refreshToken) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: "UNAUTHORIZED",
+            message: "Refresh token is required",
+          },
+        });
+      }
 
       const decoded = jwt.verify(refreshToken, config.jwt.refreshSecret);
       const storedToken = await global.redis.get(`refresh:${decoded.userId}`);
@@ -165,20 +212,23 @@ class AuthController {
         });
       }
 
+      // FIXED: Use static method call
       const { accessToken, refreshToken: newRefreshToken } =
-        this.generateTokens(decoded.userId, decoded.role);
+        AuthController.generateTokens(decoded.userId, decoded.role);
       await global.redis.setex(
         `refresh:${decoded.userId}`,
         config.jwt.refreshExpiresIn,
         newRefreshToken,
       );
 
+      AuthController.setTokenCookies(res, accessToken, refreshToken);
       res.json({
         success: true,
         data: {
           accessToken,
           refreshToken: newRefreshToken,
           expiresIn: config.jwt.accessExpiresIn,
+          message: "Token refreshed successfully",
         },
       });
     } catch (error) {
@@ -193,6 +243,7 @@ class AuthController {
   async logout(req, res, next) {
     try {
       await global.redis.del(`refresh:${req.user.id}`);
+      AuthController.clearTokenCookies(res);
       logger.info(`User logged out: ${req.user.email}`);
       res.json({ success: true, data: { message: "Logged out successfully" } });
     } catch (error) {

@@ -1,0 +1,1303 @@
+openapi: 3.0.0
+info:
+  title: AttendX API
+  description: |
+    Smart Hybrid Attendance Management System
+    
+    ## Workflow
+    
+    ### 1. Registration
+    Users register with their details based on role:
+    - **Students**: fullName, email, phone, password, role, regNumber
+    - **Lecturers**: fullName, email, phone, password, role, staffNumber
+    - **Admins**: fullName, email, phone, password, role, staffNumber
+    
+    ### 2. Attendance Flow
+    1. **Student Pre-Check-in**: Student logs in and checks in before class, sending their GPS location + regNumber
+    2. **Lecturer Starts Session**: Lecturer creates attendance session with course, classroom (pre-configured with GPS coordinates & radius), and duration
+    3. **Auto-Validation**: System checks which checked-in students are within the classroom's geofence (latitude, longitude, radius)
+    4. **Notifications**:
+       - ✅ Students within radius → Get attendance confirmation + thank you email
+       - ❌ Students outside radius → Get missed attendance alert email
+       - 🚨 Students with 2+ consecutive absences → Get urgent action notification
+    
+    ### 3. Post-Attendance
+    All users can view history, analytics, and modify their settings
+    
+  version: 2.1.0
+  contact:
+    name: AttendX Team
+    email: support@attendx.com
+
+servers:
+  - url: http://localhost:5000
+    description: Local Development
+  - url: https://api.attendx.com
+    description: Production
+
+tags:
+  - name: Auth
+    description: Registration & Authentication
+  - name: Pre-Checkin
+    description: Student pre-check-in before class
+  - name: Sessions
+    description: Lecturer creates and manages attendance sessions
+  - name: Attendance
+    description: Attendance processing & validation
+  - name: History
+    description: Attendance history & records
+  - name: Analytics
+    description: Reports, trends & statistics
+  - name: Settings
+    description: User preferences & notification settings
+  - name: Admin
+    description: System administration
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # ===== AUTH SCHEMAS =====
+    RegisterStudentRequest:
+      type: object
+      required:
+        - fullName
+        - email
+        - password
+        - role
+        - regNumber
+      properties:
+        fullName:
+          type: string
+          example: "Alice Muwanguzi"
+        email:
+          type: string
+          format: email
+          example: "alice@university.edu"
+        phone:
+          type: string
+          example: "+256700123456"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: "Student@123"
+        role:
+          type: string
+          enum: [student]
+        regNumber:
+          type: string
+          description: Student registration number
+          example: "2024/CS/001"
+
+    RegisterLecturerRequest:
+      type: object
+      required:
+        - fullName
+        - email
+        - password
+        - role
+        - staffNumber
+      properties:
+        fullName:
+          type: string
+          example: "Dr. Robert Kyagulanyi"
+        email:
+          type: string
+          format: email
+          example: "robert@university.edu"
+        phone:
+          type: string
+          example: "+256701234567"
+        password:
+          type: string
+          format: password
+          example: "Lecturer@123"
+        role:
+          type: string
+          enum: [lecturer]
+        staffNumber:
+          type: string
+          example: "LEC-2024-001"
+
+    RegisterAdminRequest:
+      type: object
+      required:
+        - fullName
+        - email
+        - password
+        - role
+        - staffNumber
+      properties:
+        fullName:
+          type: string
+          example: "Sarah Kintu"
+        email:
+          type: string
+          format: email
+          example: "admin@university.edu"
+        phone:
+          type: string
+          example: "+256702345678"
+        password:
+          type: string
+          format: password
+          example: "Admin@123!"
+        role:
+          type: string
+          enum: [admin]
+        staffNumber:
+          type: string
+          example: "ADM-2024-001"
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/User'
+            token:
+              type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        role:
+          type: string
+          enum: [student, lecturer, admin]
+        regNumber:
+          type: string
+          description: Only for students
+        staffNumber:
+          type: string
+          description: Only for lecturers/admins
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    # ===== PRE-CHECKIN SCHEMAS =====
+    PreCheckinRequest:
+      type: object
+      description: Student checks in before class, sending location
+      required:
+        - regNumber
+        - latitude
+        - longitude
+      properties:
+        regNumber:
+          type: string
+          description: Student's registration number
+          example: "2024/CS/001"
+        latitude:
+          type: number
+          format: double
+          description: GPS latitude
+          example: -1.9441
+        longitude:
+          type: number
+          format: double
+          description: GPS longitude
+          example: 30.0619
+        deviceFingerprint:
+          type: string
+          description: Unique device identifier
+          example: "android_device_abc123"
+
+    PreCheckinResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+          example: "Pre-check-in successful. Awaiting attendance session."
+        data:
+          type: object
+          properties:
+            checkinId:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [checked_in, outside_geofence]
+            distanceM:
+              type: number
+              description: Distance from nearest classroom
+            timestamp:
+              type: string
+              format: date-time
+
+    # ===== SESSION SCHEMAS =====
+    Classroom:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Computer Lab 101"
+        building:
+          type: string
+          example: "Science Block B"
+        capacity:
+          type: integer
+          example: 60
+        latitude:
+          type: number
+          format: double
+          description: GPS latitude of classroom center
+          example: -1.9441
+        longitude:
+          type: number
+          format: double
+          description: GPS longitude of classroom center
+          example: 30.0619
+        radiusM:
+          type: number
+          description: Geofence radius in meters
+          example: 30.0
+        isActive:
+          type: boolean
+
+    StartSessionRequest:
+      type: object
+      description: Lecturer creates an attendance session
+      required:
+        - courseId
+        - classroomId
+        - durationMinutes
+      properties:
+        courseId:
+          type: string
+          format: uuid
+          description: Course ID
+        classroomId:
+          type: string
+          format: uuid
+          description: Classroom ID (has predefined lat, lng, radius)
+        durationMinutes:
+          type: integer
+          description: How long the attendance window stays open
+          minimum: 5
+          maximum: 180
+          example: 90
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionCode:
+          type: string
+          description: Unique code for this session
+          example: "XK9M2P"
+        courseId:
+          type: string
+        course:
+          $ref: '#/components/schemas/Course'
+        classroomId:
+          type: string
+        classroom:
+          $ref: '#/components/schemas/Classroom'
+        lecturerId:
+          type: string
+        status:
+          type: string
+          enum: [active, closed, expired]
+        checkinOpen:
+          type: boolean
+        startedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+
+    Course:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          example: "CS301"
+        name:
+          type: string
+          example: "Database Systems"
+        description:
+          type: string
+        credits:
+          type: integer
+        semester:
+          type: string
+        lecturerId:
+          type: string
+
+    # ===== ATTENDANCE SCHEMAS =====
+    AttendanceRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+        studentId:
+          type: string
+        student:
+          $ref: '#/components/schemas/User'
+        status:
+          type: string
+          enum: [present, absent, excused, late]
+          description: |
+            Based on geofence validation:
+            - present: Checked in AND within classroom radius
+            - absent: Not checked in OR outside classroom radius
+            - excused: Manually overridden by lecturer/admin
+            - late: Checked in after session started
+        geofencePassed:
+          type: boolean
+          description: Whether student was within classroom radius
+        distanceM:
+          type: number
+          description: Distance from classroom at check-in time
+        markedAt:
+          type: string
+          format: date-time
+        notificationSent:
+          type: boolean
+          description: Whether email/notification was sent
+
+    AttendanceSummary:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        sessionCode:
+          type: string
+        course:
+          type: string
+        classroom:
+          type: string
+        totalStudents:
+          type: integer
+        present:
+          type: integer
+        absent:
+          type: integer
+        excused:
+          type: integer
+        late:
+          type: integer
+        attendanceRate:
+          type: number
+          format: double
+          example: 85.5
+
+    # ===== NOTIFICATION SCHEMAS =====
+    NotificationResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        notificationsSent:
+          type: object
+          properties:
+            confirmations:
+              type: integer
+              description: Thank you emails to present students
+            missedAlerts:
+              type: integer
+              description: Alert emails to absent students
+            urgentWarnings:
+              type: integer
+              description: Urgent notifications for 2+ consecutive absences
+
+    # ===== SETTINGS SCHEMAS =====
+    NotificationPreferences:
+      type: object
+      properties:
+        attendanceConfirmation:
+          type: boolean
+          description: Receive confirmation when marked present
+        missedAttendance:
+          type: boolean
+          description: Receive alert when marked absent
+        absenceWarning:
+          type: boolean
+          description: Receive warning for consecutive absences
+        sessionStarted:
+          type: boolean
+          description: Receive notification when session opens
+
+    # ===== ADMIN SCHEMAS =====
+    SystemConfig:
+      type: object
+      properties:
+        defaultGeofenceRadiusM:
+          type: number
+          example: 30.0
+        sessionCodeTtlMinutes:
+          type: integer
+          example: 90
+        consecutiveAbsenceWarningThreshold:
+          type: integer
+          description: Number of absences before urgent warning
+          example: 2
+        smsEnabled:
+          type: boolean
+        emailNotificationsEnabled:
+          type: boolean
+        pushNotificationsEnabled:
+          type: boolean
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        errors:
+          type: object
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ========================================================
+  # 1. REGISTRATION & AUTHENTICATION
+  # ========================================================
+  /api/v1/auth/register:
+    post:
+      tags:
+        - Auth
+      summary: "Step 1: Register new user"
+      description: |
+        Users register with role-specific details:
+        - **Student**: Must provide `regNumber`
+        - **Lecturer**: Must provide `staffNumber`
+        - **Admin**: Must provide `staffNumber`
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/RegisterStudentRequest'
+                - $ref: '#/components/schemas/RegisterLecturerRequest'
+                - $ref: '#/components/schemas/RegisterAdminRequest'
+            examples:
+              Student:
+                summary: Register as Student
+                value:
+                  fullName: "Alice Muwanguzi"
+                  email: "alice@university.edu"
+                  phone: "+256700123456"
+                  password: "Student@123"
+                  role: "student"
+                  regNumber: "2024/CS/001"
+              Lecturer:
+                summary: Register as Lecturer
+                value:
+                  fullName: "Dr. Robert Kyagulanyi"
+                  email: "robert@university.edu"
+                  phone: "+256701234567"
+                  password: "Lecturer@123"
+                  role: "lecturer"
+                  staffNumber: "LEC-2024-001"
+              Admin:
+                summary: Register as Admin
+                value:
+                  fullName: "Sarah Kintu"
+                  email: "admin@university.edu"
+                  phone: "+256702345678"
+                  password: "Admin@123!"
+                  role: "admin"
+                  staffNumber: "ADM-2024-001"
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Validation error
+        '409':
+          description: Email/RegNumber/StaffNumber already exists
+
+  /api/v1/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: User login
+      description: Login with email and password to receive JWT token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              Student:
+                value:
+                  email: "alice@university.edu"
+                  password: "Student@123"
+              Lecturer:
+                value:
+                  email: "robert@university.edu"
+                  password: "Lecturer@123"
+      responses:
+        '200':
+          description: Login successful with JWT token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+
+  /api/v1/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: Get current user profile
+      responses:
+        '200':
+          description: Current user details
+
+  /api/v1/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout
+
+  /api/v1/auth/forgot-password:
+    post:
+      tags:
+        - Auth
+      summary: Request password reset
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+
+  /api/v1/auth/reset-password:
+    post:
+      tags:
+        - Auth
+      summary: Reset password with token
+      security: []
+
+  /api/v1/auth/change-password:
+    post:
+      tags:
+        - Auth
+      summary: Change password (authenticated)
+
+  # ========================================================
+  # 2. STUDENT PRE-CHECK-IN (Before Class)
+  # ========================================================
+  /api/v1/checkin:
+    post:
+      tags:
+        - Pre-Checkin
+      summary: "Step 2: Student pre-checks in before class"
+      description: |
+        **Flow**: Student logs in → Checks in with GPS location + regNumber
+        
+        This sends the student's current location to the system.
+        The system records that the student is ready for attendance.
+        Actual attendance marking happens when the lecturer starts a session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreCheckinRequest'
+      responses:
+        '200':
+          description: Pre-check-in recorded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreCheckinResponse'
+        '400':
+          description: Invalid data or student not found
+        '404':
+          description: Student with given regNumber not found
+
+  /api/v1/checkin/status:
+    get:
+      tags:
+        - Pre-Checkin
+      summary: Get current pre-check-in status
+      description: Check if student has an active pre-check-in
+      responses:
+        '200':
+          description: Current check-in status
+
+  /api/v1/checkin/cancel:
+    post:
+      tags:
+        - Pre-Checkin
+      summary: Cancel pre-check-in
+      description: Student cancels their pre-check-in
+
+  # ========================================================
+  # 3. LECTURER SESSION MANAGEMENT
+  # ========================================================
+  /api/v1/sessions:
+    post:
+      tags:
+        - Sessions
+      summary: "Step 3: Lecturer creates attendance session"
+      description: |
+        **Flow**: Lecturer selects course → Selects classroom (pre-configured with GPS) → Sets duration → Starts attendance
+        
+        The system automatically:
+        1. Retrieves classroom's latitude, longitude, radius
+        2. Finds all pre-checked-in students
+        3. Validates which students are within the geofence
+        4. Marks attendance accordingly
+        5. Sends notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartSessionRequest'
+      responses:
+        '201':
+          description: Session created and attendance processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                    example: "Session started. Attendance processed for 45 students."
+                  data:
+                    type: object
+                    properties:
+                      session:
+                        $ref: '#/components/schemas/Session'
+                      attendanceSummary:
+                        $ref: '#/components/schemas/AttendanceSummary'
+                      notifications:
+                        $ref: '#/components/schemas/NotificationResult'
+    get:
+      tags:
+        - Sessions
+      summary: List all sessions
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, closed, expired]
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Session list
+
+  /api/v1/sessions/{sessionId}:
+    get:
+      tags:
+        - Sessions
+      summary: Get session details
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session details with attendance data
+
+  /api/v1/sessions/{sessionId}/close:
+    post:
+      tags:
+        - Sessions
+      summary: Close session manually
+      description: Lecturer closes the attendance window early
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session closed
+
+  /api/v1/sessions/{sessionId}/attendance:
+    get:
+      tags:
+        - Sessions
+      summary: Get session attendance list
+      description: All students' attendance status for this session
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [present, absent, excused, late]
+      responses:
+        '200':
+          description: Attendance list
+
+  # ========================================================
+  # 4. ATTENDANCE VALIDATION & OVERRIDES
+  # ========================================================
+  /api/v1/attendance/validate/{sessionId}:
+    post:
+      tags:
+        - Attendance
+      summary: "Step 4: System validates attendance (auto-triggered)"
+      description: |
+        **Auto-processed when session starts:**
+        1. Gets classroom GPS coordinates & radius
+        2. Calculates distance for each pre-checked-in student
+        3. Students within radius → Marked PRESENT
+        4. Students outside radius → Marked ABSENT
+        5. Sends confirmation emails to present students
+        6. Sends alert emails to absent students
+        7. Sends URGENT notification to students with 2+ consecutive absences
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Validation complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  attendanceSummary:
+                    $ref: '#/components/schemas/AttendanceSummary'
+                  notifications:
+                    $ref: '#/components/schemas/NotificationResult'
+
+  /api/v1/attendance/{attendanceId}/override:
+    patch:
+      tags:
+        - Attendance
+      summary: Override attendance status (Lecturer/Admin)
+      description: Manually change a student's attendance status
+      parameters:
+        - name: attendanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+                - reason
+              properties:
+                status:
+                  type: string
+                  enum: [present, absent, excused, late]
+                reason:
+                  type: string
+                  example: "Student provided medical certificate"
+      responses:
+        '200':
+          description: Attendance overridden
+
+  # ========================================================
+  # 5. HISTORY
+  # ========================================================
+  /api/v1/history/my-attendance:
+    get:
+      tags:
+        - History
+      summary: View own attendance history
+      description: Student/Lecturer views their attendance records
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: courseId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Attendance history
+
+  /api/v1/history/sessions:
+    get:
+      tags:
+        - History
+      summary: View session history
+      description: All past sessions with attendance data
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Session history
+
+  /api/v1/history/course/{courseId}:
+    get:
+      tags:
+        - History
+      summary: View course attendance history
+      description: Attendance records for a specific course
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Course history
+
+  /api/v1/history/export:
+    get:
+      tags:
+        - History
+      summary: Export attendance data (CSV/Excel)
+      parameters:
+        - name: courseId
+          in: query
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [csv, excel]
+      responses:
+        '200':
+          description: Exported file
+
+  # ========================================================
+  # 6. ANALYTICS
+  # ========================================================
+  /api/v1/analytics/overview:
+    get:
+      tags:
+        - Analytics
+      summary: Personal analytics overview
+      description: |
+        Returns different data based on role:
+        - **Student**: Own attendance rate, trends, risk status
+        - **Lecturer**: Course attendance stats, at-risk students
+        - **Admin**: System-wide attendance metrics
+      responses:
+        '200':
+          description: Analytics overview
+
+  /api/v1/analytics/course/{courseId}:
+    get:
+      tags:
+        - Analytics
+      summary: Course analytics
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Course analytics
+
+  /api/v1/analytics/at-risk:
+    get:
+      tags:
+        - Analytics
+      summary: Get at-risk students (2+ absences)
+      description: Students with consecutive absences needing urgent action
+      parameters:
+        - name: courseId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: At-risk students list
+
+  /api/v1/analytics/trends:
+    get:
+      tags:
+        - Analytics
+      summary: Attendance trends
+      parameters:
+        - name: weeks
+          in: query
+          schema:
+            type: integer
+            example: 8
+        - name: courseId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Trend data
+
+  # ========================================================
+  # 7. SETTINGS
+  # ========================================================
+  /api/v1/settings/profile:
+    get:
+      tags:
+        - Settings
+      summary: Get profile settings
+    put:
+      tags:
+        - Settings
+      summary: Update profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName:
+                  type: string
+                phone:
+                  type: string
+
+  /api/v1/settings/notifications:
+    get:
+      tags:
+        - Settings
+      summary: Get notification preferences
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+    put:
+      tags:
+        - Settings
+      summary: Update notification preferences
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferences'
+
+  /api/v1/settings/devices:
+    get:
+      tags:
+        - Settings
+      summary: List registered devices
+    post:
+      tags:
+        - Settings
+      summary: Register device for push notifications
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceFingerprint:
+                  type: string
+                platform:
+                  type: string
+                  enum: [android, ios, web]
+                fcmToken:
+                  type: string
+
+  /api/v1/settings/devices/{deviceId}:
+    delete:
+      tags:
+        - Settings
+      summary: Remove device
+
+  # ========================================================
+  # 8. ADMIN
+  # ========================================================
+  /api/v1/admin/users:
+    get:
+      tags:
+        - Admin
+      summary: List all users
+      parameters:
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [student, lecturer, admin]
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+    post:
+      tags:
+        - Admin
+      summary: Create user manually
+
+  /api/v1/admin/users/{userId}:
+    get:
+      tags:
+        - Admin
+      summary: Get user details
+    put:
+      tags:
+        - Admin
+      summary: Update user
+    delete:
+      tags:
+        - Admin
+      summary: Deactivate user
+
+  /api/v1/admin/classrooms:
+    get:
+      tags:
+        - Admin
+      summary: List all classrooms
+    post:
+      tags:
+        - Admin
+      summary: Create classroom with GPS coordinates
+      description: Admin sets classroom location for geofence validation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - latitude
+                - longitude
+              properties:
+                name:
+                  type: string
+                  example: "Computer Lab 101"
+                building:
+                  type: string
+                  example: "Science Block B"
+                capacity:
+                  type: integer
+                  example: 60
+                latitude:
+                  type: number
+                  example: -1.9441
+                longitude:
+                  type: number
+                  example: 30.0619
+                radiusM:
+                  type: number
+                  default: 30.0
+                  example: 30.0
+
+  /api/v1/admin/classrooms/{classroomId}:
+    get:
+      tags:
+        - Admin
+      summary: Get classroom details
+    put:
+      tags:
+        - Admin
+      summary: Update classroom (including GPS/radius)
+
+  /api/v1/admin/courses:
+    get:
+      tags:
+        - Admin
+      summary: List all courses
+    post:
+      tags:
+        - Admin
+      summary: Create course
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+                - name
+                - lecturerId
+              properties:
+                code:
+                  type: string
+                  example: "CS301"
+                name:
+                  type: string
+                  example: "Database Systems"
+                description:
+                  type: string
+                credits:
+                  type: integer
+                semester:
+                  type: string
+                lecturerId:
+                  type: string
+
+  /api/v1/admin/courses/{courseId}/enroll:
+    post:
+      tags:
+        - Admin
+      summary: Enroll students in course
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                studentIds:
+                  type: array
+                  items:
+                    type: string
+
+  /api/v1/admin/system/config:
+    get:
+      tags:
+        - Admin
+      summary: Get system configuration
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfig'
+    put:
+      tags:
+        - Admin
+      summary: Update system settings
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemConfig'
+
+  /api/v1/admin/system/stats:
+    get:
+      tags:
+        - Admin
+      summary: System-wide statistics
+
+  # ========================================================
+  # HEALTH
+  # ========================================================
+  /health:
+    get:
+      tags:
+        - Admin
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Server is healthy

@@ -39,16 +39,17 @@ enum Platform {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  fullName  String
-  email     String   @unique
-  phone     String?  @unique
-  password  String
-  role      UserRole
-  regNumber String?  @unique
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(uuid())
+  fullName    String
+  email       String   @unique
+  phone       String?  @unique
+  password    String
+  role        UserRole
+  regNumber   String?  @unique // Only for students
+  staffNumber String?  @unique // Only for lecturers & admins
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Relations
   taughtCourses       Course[]                @relation("LecturerCourses")

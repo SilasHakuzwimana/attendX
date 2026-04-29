@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
+const cookieParser = require("cookie-parser");
 const compression = require("compression");
 const config = require("./config");
 const { generalLimiter } = require("./middleware/rateLimit.middleware");
@@ -14,6 +15,7 @@ const app = express();
 
 // Middleware
 app.use(helmet());
+app.use(cookieParser());
 app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

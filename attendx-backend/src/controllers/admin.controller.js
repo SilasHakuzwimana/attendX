@@ -4,16 +4,27 @@ const logger = require("../utils/logger");
 const config = require("../config");
 const csv = require("csv-parser");
 const { Readable } = require("stream");
+const { prisma, redisClient } = require("../index");
 
 class AdminController {
   /**
-   * List all users
-   * GET /api/admin/users
+   * List all users with advanced filtering
+   * GET /api/v1/admin/users
    */
   async listUsers(req, res, next) {
     try {
-      const { page = 1, limit = 20, role, search, isActive } = req.query;
-      const skip = (page - 1) * limit;
+      const {
+        page = 1,
+        limit = 20,
+        role,
+        search,
+        isActive,
+        sortBy = "createdAt",
+        sortOrder = "desc",
+      } = req.query;
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const take = parseInt(limit);
 
       const where = {};
       if (role) where.role = role;
@@ -23,15 +34,17 @@ class AdminController {
           { fullName: { contains: search, mode: "insensitive" } },
           { email: { contains: search, mode: "insensitive" } },
           { regNumber: { contains: search, mode: "insensitive" } },
+          { staffNumber: { contains: search, mode: "insensitive" } },
+          { phone: { contains: search, mode: "insensitive" } },
         ];
       }
 
       const [users, total] = await Promise.all([
-        global.prisma.user.findMany({
+        prisma.user.findMany({
           where,
-          skip: parseInt(skip),
-          take: parseInt(limit),
-          orderBy: { createdAt: "desc" },
+          skip,
+          take,
+          orderBy: { [sortBy]: sortOrder },
           select: {
             id: true,
             fullName: true,
@@ -39,31 +52,45 @@ class AdminController {
             phone: true,
             role: true,
             regNumber: true,
+            staffNumber: true,
             isActive: true,
+            lastLoginAt: true,
             createdAt: true,
+            updatedAt: true,
+            _count: {
+              select: {
+                devices: true,
+                enrollments: true,
+                taughtCourses: true,
+                sessions: true,
+              },
+            },
           },
         }),
-        global.prisma.user.count({ where }),
+        prisma.user.count({ where }),
       ]);
 
       res.json({
         success: true,
         data: users,
-        meta: {
+        pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
           total,
-          totalPages: Math.ceil(total / limit),
+          totalPages: Math.ceil(total / parseInt(limit)),
+          hasNextPage: skip + take < total,
+          hasPrevPage: page > 1,
         },
       });
     } catch (error) {
+      logger.error("List users error:", error);
       next(error);
     }
   }
 
   /**
    * Create new user
-   * POST /api/admin/users
+   * POST /api/v1/admin/users
    */
   async createUser(req, res, next) {
     try {
@@ -74,18 +101,21 @@ class AdminController {
           error: {
             code: "VALIDATION_ERROR",
             message: "Invalid input",
-            fields: errors.array(),
+            details: errors.array(),
           },
         });
       }
 
-      const { fullName, email, phone, role, regNumber, password } = req.body;
+      const { fullName, email, phone, role, regNumber, staffNumber, password } =
+        req.body;
 
-      const existingUser = await global.prisma.user.findFirst({
+      // Check for existing user
+      const existingUser = await prisma.user.findFirst({
         where: {
           OR: [
-            { email },
+            { email: email.toLowerCase() },
             { regNumber: regNumber || undefined },
+            { staffNumber: staffNumber || undefined },
             { phone: phone || undefined },
           ],
         },
@@ -103,17 +133,19 @@ class AdminController {
       }
 
       const hashedPassword = await bcrypt.hash(
-        password,
-        config.security.bcryptRounds,
+        password || "Temp@1234",
+        parseInt(config.security?.bcryptRounds) || 10,
       );
-      const user = await global.prisma.user.create({
+
+      const user = await prisma.user.create({
         data: {
           fullName,
-          email,
+          email: email.toLowerCase(),
           phone,
           role,
           regNumber,
-          password: hashedPassword,
+          staffNumber,
+          passwordHash: hashedPassword,
           isActive: true,
         },
         select: {
@@ -123,29 +155,46 @@ class AdminController {
           phone: true,
           role: true,
           regNumber: true,
+          staffNumber: true,
           isActive: true,
           createdAt: true,
         },
       });
 
       // Create default notification preferences
-      await global.prisma.notificationPreference.create({
+      await prisma.notificationPreference.create({
         data: { userId: user.id },
+      });
+
+      // Create audit log
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "CREATE",
+          entity: "User",
+          entityId: user.id,
+          newValues: { email: user.email, role: user.role },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
       });
 
       logger.info(`User created by ${req.user.email}: ${email} (${role})`);
 
       res.status(201).json({ success: true, data: user });
     } catch (error) {
+      logger.error("Create user error:", error);
       next(error);
     }
   }
 
   /**
    * Bulk import users from CSV
-   * POST /api/admin/users/bulk-import
+   * POST /api/v1/admin/users/bulk-import
    */
   async bulkImportUsers(req, res, next) {
+    let importJob = null;
+
     try {
       if (!req.file) {
         return res.status(400).json({
@@ -155,9 +204,19 @@ class AdminController {
       }
 
       const { role } = req.body;
+
+      // Create import job record
+      importJob = await prisma.bulkImportJob.create({
+        data: {
+          type: "users",
+          status: "processing",
+          totalRecords: 0,
+          createdBy: req.user.id,
+        },
+      });
+
       const results = [];
       const errors = [];
-
       const csvString = req.file.buffer.toString("utf-8");
       const lines = csvString.split("\n").slice(1); // Skip header
 
@@ -165,13 +224,28 @@ class AdminController {
         const line = lines[i].trim();
         if (!line) continue;
 
-        const [fullName, email, phone, regNumber, password] = line
+        const [fullName, email, phone, regNumber, staffNumber, password] = line
           .split(",")
           .map((s) => s.trim().replace(/^"|"$/g, ""));
 
         try {
-          const existingUser = await global.prisma.user.findFirst({
-            where: { OR: [{ email }, { regNumber }] },
+          // Validate required fields
+          if (!fullName || !email) {
+            errors.push({
+              row: i + 2,
+              message: "Full name and email are required",
+            });
+            continue;
+          }
+
+          const existingUser = await prisma.user.findFirst({
+            where: {
+              OR: [
+                { email: email.toLowerCase() },
+                { regNumber: regNumber || undefined },
+                { staffNumber: staffNumber || undefined },
+              ],
+            },
           });
 
           if (existingUser) {
@@ -184,29 +258,57 @@ class AdminController {
 
           const hashedPassword = await bcrypt.hash(
             password || "Temp@1234",
-            config.security.bcryptRounds,
+            parseInt(config.security?.bcryptRounds) || 10,
           );
-          const user = await global.prisma.user.create({
+
+          const user = await prisma.user.create({
             data: {
               fullName,
-              email,
+              email: email.toLowerCase(),
               phone,
               role,
               regNumber,
-              password: hashedPassword,
+              staffNumber,
+              passwordHash: hashedPassword,
               isActive: true,
             },
           });
 
-          await global.prisma.notificationPreference.create({
+          await prisma.notificationPreference.create({
             data: { userId: user.id },
           });
 
           results.push(user);
         } catch (error) {
+          logger.error(`Bulk import row ${i + 2} error:`, error);
           errors.push({ row: i + 2, message: error.message });
         }
       }
+
+      // Update import job
+      await prisma.bulkImportJob.update({
+        where: { id: importJob.id },
+        data: {
+          status: "completed",
+          totalRecords: lines.length,
+          processedRecords: results.length,
+          failedRecords: errors.length,
+          errors: errors,
+          completedAt: new Date(),
+        },
+      });
+
+      // Create audit log
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "BULK_IMPORT",
+          entity: "User",
+          newValues: { imported: results.length, failed: errors.length },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
 
       logger.info(
         `Bulk import completed by ${req.user.email}: ${results.length} imported, ${errors.length} failed`,
@@ -215,29 +317,90 @@ class AdminController {
       res.json({
         success: true,
         data: {
+          jobId: importJob.id,
           imported: results.length,
-          skipped: errors.length,
-          errors,
+          failed: errors.length,
+          errors: errors.slice(0, 100), // Limit error response size
         },
       });
     } catch (error) {
+      logger.error("Bulk import error:", error);
+
+      // Update import job as failed
+      if (importJob) {
+        await prisma.bulkImportJob.update({
+          where: { id: importJob.id },
+          data: {
+            status: "failed",
+            errors: [{ message: error.message }],
+            completedAt: new Date(),
+          },
+        });
+      }
+
       next(error);
     }
   }
 
   /**
-   * Get user by ID
-   * GET /api/admin/users/:userId
+   * Get user by ID with full details
+   * GET /api/v1/admin/users/:userId
    */
   async getUser(req, res, next) {
     try {
       const { userId } = req.params;
 
-      const user = await global.prisma.user.findUnique({
+      const user = await prisma.user.findUnique({
         where: { id: userId },
         include: {
           notificationPref: true,
-          devices: true,
+          devices: {
+            where: { isActive: true },
+            select: {
+              id: true,
+              deviceName: true,
+              platform: true,
+              lastSeenAt: true,
+              isActive: true,
+              isTrusted: true,
+            },
+          },
+          enrollments: {
+            where: { isActive: true },
+            include: {
+              course: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  credits: true,
+                },
+              },
+            },
+          },
+          taughtCourses: {
+            where: { isActive: true },
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              credits: true,
+              _count: {
+                select: { enrollments: true },
+              },
+            },
+          },
+          attendanceRecords: {
+            take: 10,
+            orderBy: { markedAt: "desc" },
+            include: {
+              session: {
+                include: {
+                  course: true,
+                },
+              },
+            },
+          },
         },
       });
 
@@ -248,28 +411,45 @@ class AdminController {
         });
       }
 
-      const { password, ...userWithoutPassword } = user;
+      // Remove sensitive data
+      const {
+        passwordHash,
+        resetToken,
+        resetTokenExpires,
+        ...userWithoutPassword
+      } = user;
 
       res.json({ success: true, data: userWithoutPassword });
     } catch (error) {
+      logger.error("Get user error:", error);
       next(error);
     }
   }
 
   /**
    * Update user
-   * PATCH /api/admin/users/:userId
+   * PATCH /api/v1/admin/users/:userId
    */
   async updateUser(req, res, next) {
     try {
       const { userId } = req.params;
-      const { fullName, phone, isActive } = req.body;
+      const { fullName, phone, role, regNumber, staffNumber, isActive } =
+        req.body;
 
-      const user = await global.prisma.user.update({
+      // Get old values for audit
+      const oldUser = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { fullName: true, phone: true, role: true, isActive: true },
+      });
+
+      const user = await prisma.user.update({
         where: { id: userId },
         data: {
           ...(fullName && { fullName }),
           ...(phone && { phone }),
+          ...(role && { role }),
+          ...(regNumber && { regNumber }),
+          ...(staffNumber && { staffNumber }),
           ...(isActive !== undefined && { isActive }),
         },
         select: {
@@ -279,480 +459,500 @@ class AdminController {
           phone: true,
           role: true,
           regNumber: true,
+          staffNumber: true,
           isActive: true,
           createdAt: true,
+          updatedAt: true,
         },
       });
+
+      // If deactivating, revoke all refresh tokens
+      if (isActive === false) {
+        await prisma.refreshToken.updateMany({
+          where: { userId, revoked: false },
+          data: { revoked: true },
+        });
+
+        if (redisClient && redisClient.isReady) {
+          const keys = await redisClient.keys(`refresh:${userId}:*`);
+          if (keys.length > 0) {
+            await redisClient.del(keys);
+          }
+        }
+      }
+
+      // Create audit log
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "UPDATE",
+          entity: "User",
+          entityId: userId,
+          oldValues: oldUser,
+          newValues: { fullName, phone, role, isActive },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      // Invalidate user cache
+      if (redisClient && redisClient.isReady) {
+        const cacheKeys = await redisClient.keys(`*${userId}*`);
+        if (cacheKeys.length > 0) {
+          await redisClient.del(cacheKeys);
+        }
+      }
 
       logger.info(`User updated by ${req.user.email}: ${user.email}`);
 
       res.json({ success: true, data: user });
     } catch (error) {
+      logger.error("Update user error:", error);
       next(error);
     }
   }
 
   /**
-   * Deactivate user
-   * DELETE /api/admin/users/:userId
+   * Deactivate user (soft delete)
+   * DELETE /api/v1/admin/users/:userId
    */
   async deactivateUser(req, res, next) {
     try {
       const { userId } = req.params;
 
-      const user = await global.prisma.user.update({
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true, role: true, isActive: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "User not found" },
+        });
+      }
+
+      if (!user.isActive) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "ALREADY_INACTIVE",
+            message: "User is already deactivated",
+          },
+        });
+      }
+
+      await prisma.user.update({
         where: { id: userId },
         data: { isActive: false },
       });
 
-      // Invalidate all refresh tokens
-      await global.redis.del(`refresh:${userId}`);
+      // Revoke all refresh tokens
+      await prisma.refreshToken.updateMany({
+        where: { userId, revoked: false },
+        data: { revoked: true },
+      });
+
+      // Clear Redis cache
+      if (redisClient && redisClient.isReady) {
+        const keys = await redisClient.keys(`refresh:${userId}:*`);
+        if (keys.length > 0) {
+          await redisClient.del(keys);
+        }
+        const cacheKeys = await redisClient.keys(`*${userId}*`);
+        if (cacheKeys.length > 0) {
+          await redisClient.del(cacheKeys);
+        }
+      }
+
+      // Create audit log
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "DEACTIVATE",
+          entity: "User",
+          entityId: userId,
+          oldValues: { isActive: true },
+          newValues: { isActive: false },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
 
       logger.info(`User deactivated by ${req.user.email}: ${user.email}`);
 
       res.json({
         success: true,
         data: {
-          message: "User deactivated. All historical records preserved.",
+          message:
+            "User deactivated successfully. All historical records preserved.",
         },
       });
     } catch (error) {
+      logger.error("Deactivate user error:", error);
       next(error);
     }
   }
 
   /**
-   * List all courses
-   * GET /api/admin/courses
+   * Force reset user password
+   * POST /api/v1/admin/users/:userId/reset-password
    */
-  async listCourses(req, res, next) {
+  async forceResetPassword(req, res, next) {
     try {
-      const { page = 1, limit = 20, search, lecturerId } = req.query;
-      const skip = (page - 1) * limit;
+      const { userId } = req.params;
+      const { newPassword } = req.body;
 
-      const where = {};
-      if (search) {
-        where.OR = [
-          { code: { contains: search, mode: "insensitive" } },
-          { name: { contains: search, mode: "insensitive" } },
-        ];
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true, fullName: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "User not found" },
+        });
       }
-      if (lecturerId) where.lecturerId = lecturerId;
 
-      const [courses, total] = await Promise.all([
-        global.prisma.course.findMany({
-          where,
-          skip: parseInt(skip),
-          take: parseInt(limit),
-          include: {
-            lecturer: {
-              select: { id: true, fullName: true, email: true },
-            },
-          },
-          orderBy: { createdAt: "desc" },
-        }),
-        global.prisma.course.count({ where }),
-      ]);
+      const hashedPassword = await bcrypt.hash(
+        newPassword || crypto.randomBytes(8).toString("hex"),
+        parseInt(config.security?.bcryptRounds) || 10,
+      );
 
-      // Add enrollment count
-      const coursesWithCount = await Promise.all(
-        courses.map(async (course) => {
-          const enrollmentCount = await global.prisma.enrollment.count({
-            where: { courseId: course.id },
-          });
-          return { ...course, enrollmentCount };
-        }),
+      await prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash: hashedPassword },
+      });
+
+      // Revoke all refresh tokens for security
+      await prisma.refreshToken.updateMany({
+        where: { userId, revoked: false },
+        data: { revoked: true },
+      });
+
+      // Create audit log
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "FORCE_RESET_PASSWORD",
+          entity: "User",
+          entityId: userId,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      logger.info(
+        `Password force reset by ${req.user.email} for user: ${user.email}`,
       );
 
       res.json({
         success: true,
-        data: coursesWithCount,
-        meta: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total,
-          totalPages: Math.ceil(total / limit),
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Create course
-   * POST /api/admin/courses
-   */
-  async createCourse(req, res, next) {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: "VALIDATION_ERROR",
-            message: "Invalid input",
-            fields: errors.array(),
-          },
-        });
-      }
-
-      const { code, name, description, credits, semester, lecturerId } =
-        req.body;
-
-      const existingCourse = await global.prisma.course.findUnique({
-        where: { code },
-      });
-
-      if (existingCourse) {
-        return res.status(409).json({
-          success: false,
-          error: { code: "CONFLICT", message: "Course code already exists" },
-        });
-      }
-
-      const course = await global.prisma.course.create({
         data: {
-          code,
-          name,
-          description,
-          credits: credits || 3,
-          semester: semester || new Date().getFullYear().toString(),
-          lecturerId,
-        },
-        include: {
-          lecturer: {
-            select: { id: true, fullName: true, email: true },
-          },
+          message: "Password reset successfully. User must login again.",
         },
       });
-
-      logger.info(`Course created by ${req.user.email}: ${code} - ${name}`);
-
-      res.status(201).json({ success: true, data: course });
     } catch (error) {
+      logger.error("Force reset password error:", error);
       next(error);
     }
   }
 
   /**
-   * Update course
-   * PATCH /api/admin/courses/:courseId
+   * Get system-wide analytics overview
+   * GET /api/v1/admin/analytics/overview
    */
-  async updateCourse(req, res, next) {
+  async getSystemOverview(req, res, next) {
     try {
-      const { courseId } = req.params;
-      const { name, lecturerId, credits, isActive } = req.body;
+      const cacheKey = "admin:system:overview";
 
-      const course = await global.prisma.course.update({
-        where: { id: courseId },
-        data: {
-          ...(name && { name }),
-          ...(lecturerId && { lecturerId }),
-          ...(credits && { credits }),
-          ...(isActive !== undefined && { isActive }),
-        },
-        include: {
-          lecturer: {
-            select: { id: true, fullName: true, email: true },
-          },
-        },
-      });
-
-      logger.info(`Course updated by ${req.user.email}: ${course.code}`);
-
-      res.json({ success: true, data: course });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Deactivate course
-   * DELETE /api/admin/courses/:courseId
-   */
-  async deactivateCourse(req, res, next) {
-    try {
-      const { courseId } = req.params;
-
-      const course = await global.prisma.course.update({
-        where: { id: courseId },
-        data: { isActive: false },
-      });
-
-      logger.info(`Course deactivated by ${req.user.email}: ${course.code}`);
-
-      res.json({ success: true, data: { message: "Course deactivated" } });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Enroll students in course
-   * POST /api/admin/courses/:courseId/enroll
-   */
-  async enrollStudents(req, res, next) {
-    try {
-      const { courseId } = req.params;
-      const { studentIds } = req.body;
-
-      const course = await global.prisma.course.findUnique({
-        where: { id: courseId },
-      });
-
-      if (!course) {
-        return res.status(404).json({
-          success: false,
-          error: { code: "NOT_FOUND", message: "Course not found" },
-        });
-      }
-
-      let enrolled = 0;
-      let alreadyEnrolled = 0;
-
-      for (const studentId of studentIds) {
-        try {
-          await global.prisma.enrollment.create({
-            data: { studentId, courseId },
+      // Check cache
+      let cachedData = null;
+      if (redisClient && redisClient.isReady) {
+        cachedData = await redisClient.get(cacheKey);
+        if (cachedData) {
+          return res.json({
+            success: true,
+            data: JSON.parse(cachedData),
+            meta: { cached: true },
           });
-          enrolled++;
-        } catch (error) {
-          if (error.code === "P2002") {
-            alreadyEnrolled++;
-          } else {
-            throw error;
-          }
         }
       }
 
-      logger.info(
-        `Students enrolled by ${req.user.email}: ${enrolled} in course ${course.code}`,
-      );
-
-      res.json({
-        success: true,
-        data: {
-          enrolled,
-          alreadyEnrolled,
-          message: `${enrolled} students enrolled successfully`,
-        },
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Remove student from course
-   * DELETE /api/admin/courses/:courseId/enroll/:studentId
-   */
-  async removeStudent(req, res, next) {
-    try {
-      const { courseId, studentId } = req.params;
-
-      await global.prisma.enrollment.delete({
-        where: {
-          studentId_courseId: {
-            studentId,
-            courseId,
+      const [
+        totalUsers,
+        activeUsers,
+        totalStudents,
+        totalLecturers,
+        totalAdmins,
+        totalCourses,
+        activeCourses,
+        totalSessions,
+        activeSessions,
+        totalAttendance,
+        presentAttendance,
+        totalClassrooms,
+        todaysCheckins,
+        weeklyActiveUsers,
+      ] = await Promise.all([
+        prisma.user.count(),
+        prisma.user.count({ where: { isActive: true } }),
+        prisma.user.count({ where: { role: "student", isActive: true } }),
+        prisma.user.count({ where: { role: "lecturer", isActive: true } }),
+        prisma.user.count({ where: { role: "admin", isActive: true } }),
+        prisma.course.count(),
+        prisma.course.count({ where: { isActive: true } }),
+        prisma.session.count(),
+        prisma.session.count({ where: { status: "active" } }),
+        prisma.attendanceRecord.count(),
+        prisma.attendanceRecord.count({ where: { status: "present" } }),
+        prisma.classroom.count({ where: { isActive: true } }),
+        prisma.roomCheckin.count({
+          where: {
+            checkedInAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
           },
-        },
-      });
-
-      logger.info(
-        `Student removed from course by ${req.user.email}: ${studentId} from ${courseId}`,
-      );
-
-      res.json({
-        success: true,
-        data: { message: "Student removed from course" },
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * List classrooms
-   * GET /api/admin/classrooms
-   */
-  async listClassrooms(req, res, next) {
-    try {
-      const { page = 1, limit = 20 } = req.query;
-      const skip = (page - 1) * limit;
-
-      const [classrooms, total] = await Promise.all([
-        global.prisma.classroom.findMany({
-          skip: parseInt(skip),
-          take: parseInt(limit),
-          orderBy: { createdAt: "desc" },
         }),
-        global.prisma.classroom.count(),
+        prisma.user.count({
+          where: {
+            lastLoginAt: {
+              gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+            },
+          },
+        }),
       ]);
 
-      res.json({
-        success: true,
-        data: classrooms,
-        meta: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total,
-          totalPages: Math.ceil(total / limit),
+      const responseData = {
+        users: {
+          total: totalUsers,
+          active: activeUsers,
+          students: totalStudents,
+          lecturers: totalLecturers,
+          admins: totalAdmins,
+          weeklyActive: weeklyActiveUsers,
         },
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
+        academics: {
+          totalCourses,
+          activeCourses,
+          totalSessions,
+          activeSessions,
+          totalClassrooms,
+        },
+        attendance: {
+          totalRecords: totalAttendance,
+          presentCount: presentAttendance,
+          attendanceRate:
+            totalAttendance > 0
+              ? parseFloat(
+                  ((presentAttendance / totalAttendance) * 100).toFixed(2),
+                )
+              : 0,
+          todaysCheckins,
+        },
+        timestamp: new Date(),
+      };
 
-  /**
-   * Create classroom
-   * POST /api/admin/classrooms
-   */
-  async createClassroom(req, res, next) {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: "VALIDATION_ERROR",
-            message: "Invalid input",
-            fields: errors.array(),
-          },
-        });
+      // Cache for 5 minutes
+      if (redisClient && redisClient.isReady) {
+        await redisClient.setEx(cacheKey, 300, JSON.stringify(responseData));
       }
 
-      const { name, building, capacity, latitude, longitude, radiusM } =
-        req.body;
-
-      const classroom = await global.prisma.classroom.create({
-        data: {
-          name,
-          building,
-          capacity,
-          latitude,
-          longitude,
-          radiusM,
-        },
+      res.json({
+        success: true,
+        data: responseData,
       });
-
-      logger.info(`Classroom created by ${req.user.email}: ${name}`);
-
-      res.status(201).json({ success: true, data: classroom });
     } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Update classroom
-   * PATCH /api/admin/classrooms/:classroomId
-   */
-  async updateClassroom(req, res, next) {
-    try {
-      const { classroomId } = req.params;
-      const { name, building, capacity, latitude, longitude, radiusM } =
-        req.body;
-
-      const classroom = await global.prisma.classroom.update({
-        where: { id: classroomId },
-        data: {
-          ...(name && { name }),
-          ...(building && { building }),
-          ...(capacity && { capacity }),
-          ...(latitude && { latitude }),
-          ...(longitude && { longitude }),
-          ...(radiusM && { radiusM }),
-        },
-      });
-
-      logger.info(`Classroom updated by ${req.user.email}: ${classroom.name}`);
-
-      res.json({ success: true, data: classroom });
-    } catch (error) {
+      logger.error("Get system overview error:", error);
       next(error);
     }
   }
 
   /**
    * Get system configuration
-   * GET /api/admin/system/config
+   * GET /api/v1/admin/config
    */
   async getSystemConfig(req, res, next) {
     try {
-      let config = await global.prisma.systemConfig.findUnique({
+      let config = await prisma.systemConfig.findUnique({
         where: { id: "singleton" },
       });
 
       if (!config) {
-        config = await global.prisma.systemConfig.create({
+        config = await prisma.systemConfig.create({
           data: { id: "singleton" },
         });
       }
 
       res.json({ success: true, data: config });
     } catch (error) {
+      logger.error("Get system config error:", error);
       next(error);
     }
   }
 
   /**
    * Update system configuration
-   * PUT /api/admin/system/config
+   * PUT /api/v1/admin/config
    */
   async updateSystemConfig(req, res, next) {
     try {
-      const config = await global.prisma.systemConfig.upsert({
+      const config = await prisma.systemConfig.upsert({
         where: { id: "singleton" },
-        update: req.body,
-        create: { id: "singleton", ...req.body },
+        update: {
+          ...req.body,
+          updatedBy: req.user.id,
+          updatedAt: new Date(),
+        },
+        create: {
+          id: "singleton",
+          ...req.body,
+          updatedBy: req.user.id,
+        },
       });
+
+      // Create audit log
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "UPDATE_CONFIG",
+          entity: "SystemConfig",
+          newValues: req.body,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      // Clear system config cache
+      if (redisClient && redisClient.isReady) {
+        await redisClient.del("admin:system:overview");
+      }
 
       logger.info(`System config updated by ${req.user.email}`);
 
       res.json({ success: true, data: config });
     } catch (error) {
+      logger.error("Update system config error:", error);
       next(error);
     }
   }
 
   /**
-   * Get system stats
-   * GET /api/admin/system/stats
+   * Get system health and stats
+   * GET /api/v1/admin/system/stats
    */
   async getSystemStats(req, res, next) {
     try {
-      const [activeSessions, redisConnected, dbPoolStatus, lastEmailLog] =
-        await Promise.all([
-          global.prisma.session.count({
-            where: { status: "active", checkinOpen: true },
-          }),
-          global.redis
-            .ping()
-            .then(() => true)
-            .catch(() => false),
-          global.prisma
-            .$queryRaw`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()`,
-          global.prisma.attendanceRecord.findFirst({
-            orderBy: { markedAt: "desc" },
-            select: { markedAt: true },
-          }),
-        ]);
+      const [
+        activeSessions,
+        redisConnected,
+        dbStats,
+        lastAttendance,
+        uploadDirSize,
+      ] = await Promise.all([
+        prisma.session.count({
+          where: { status: "active", checkinOpen: true },
+        }),
+        redisClient && redisClient.isReady
+          ? redisClient
+              .ping()
+              .then(() => true)
+              .catch(() => false)
+          : false,
+        prisma.$queryRaw`SELECT 
+          (SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()) as connections,
+          (SELECT pg_database_size(current_database()) / 1024 / 1024 as size_mb) as db_size_mb`,
+        prisma.attendanceRecord.findFirst({
+          orderBy: { markedAt: "desc" },
+          select: { markedAt: true },
+        }),
+        Promise.resolve(0), // Placeholder for upload dir size calculation
+      ]);
 
       res.json({
         success: true,
         data: {
           activeSessions,
-          redisConnected,
-          dbPoolSize: dbPoolStatus?.[0]?.count || 0,
-          lastAttendanceRecord: lastEmailLog?.markedAt || null,
+          redis: {
+            connected: redisConnected,
+            latency: redisConnected ? "< 1ms" : "N/A",
+          },
+          database: {
+            connections: dbStats[0]?.connections || 0,
+            sizeMB: dbStats[0]?.db_size_mb || 0,
+            lastAttendanceRecord: lastAttendance?.markedAt || null,
+          },
           uptime: process.uptime(),
+          memoryUsage: process.memoryUsage(),
           timestamp: new Date(),
+          version: process.env.npm_package_version || "1.0.0",
         },
       });
     } catch (error) {
+      logger.error("Get system stats error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Get audit logs
+   * GET /api/v1/admin/audit-logs
+   */
+  async getAuditLogs(req, res, next) {
+    try {
+      const {
+        page = 1,
+        limit = 50,
+        action,
+        entity,
+        userId,
+        from,
+        to,
+      } = req.query;
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const where = {};
+
+      if (action) where.action = action;
+      if (entity) where.entity = entity;
+      if (userId) where.userId = userId;
+      if (from || to) {
+        where.createdAt = {};
+        if (from) where.createdAt.gte = new Date(from);
+        if (to) where.createdAt.lte = new Date(to);
+      }
+
+      const [logs, total] = await Promise.all([
+        prisma.auditLog.findMany({
+          where,
+          include: {
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                email: true,
+                role: true,
+              },
+            },
+          },
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: parseInt(limit),
+        }),
+        prisma.auditLog.count({ where }),
+      ]);
+
+      res.json({
+        success: true,
+        data: logs,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit)),
+        },
+      });
+    } catch (error) {
+      logger.error("Get audit logs error:", error);
       next(error);
     }
   }

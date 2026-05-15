@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const config = require("../config");
+const { prisma } = require("../config/index");
 
 const authenticateToken = async (req, res, next) => {
   let token = null;
@@ -47,6 +48,7 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = user;
+    req.deviceFingerprint = decoded.deviceFingerprint;
     next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
@@ -62,12 +64,22 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-const requireRole = (...roles) => {
+const requireRole = (...allowedRoles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: { code: "UNAUTHORIZED", message: "Not authenticated" },
+      });
+    }
+
+    if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        error: { code: "FORBIDDEN", message: "Insufficient permissions" },
+        error: {
+          code: "FORBIDDEN",
+          message: `Role '${req.user.role}' not allowed. Required: ${allowedRoles.join(", ")}`,
+        },
       });
     }
     next();

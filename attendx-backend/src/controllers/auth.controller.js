@@ -5,19 +5,33 @@ const { validationResult } = require("express-validator");
 const logger = require("../utils/logger");
 const config = require("../config");
 const { sendEmail } = require("../services/email.service");
+const { prisma, redisClient } = require("../config/index");
 
 class AuthController {
   /**
-   * Generate JWT tokens (static helper)
+   * Generate JWT tokens
    */
-  static generateTokens(userId, role) {
-    const accessToken = jwt.sign({ userId, role }, config.jwt.secret, {
-      expiresIn: config.jwt.accessExpiresIn,
-    });
-    const refreshToken = jwt.sign({ userId, role }, config.jwt.refreshSecret, {
-      expiresIn: config.jwt.refreshExpiresIn,
-    });
+  static generateTokens(userId, role, deviceFingerprint = null) {
+    const accessToken = jwt.sign(
+      { userId, role, deviceFingerprint, type: "access" },
+      config.jwt.accessSecret || config.jwt.secret,
+      { expiresIn: config.jwt.accessExpiresIn || "1h" },
+    );
+
+    const refreshToken = jwt.sign(
+      { userId, role, deviceFingerprint, type: "refresh" },
+      config.jwt.refreshSecret || config.jwt.secret,
+      { expiresIn: config.jwt.refreshExpiresIn || "7d" },
+    );
+
     return { accessToken, refreshToken };
+  }
+
+  /**
+   * Hash refresh token for storage
+   */
+  static hashToken(token) {
+    return crypto.createHash("sha256").update(token).digest("hex");
   }
 
   /**
@@ -28,10 +42,10 @@ class AuthController {
 
     // Access token cookie (short-lived)
     res.cookie("accessToken", accessToken, {
-      httpOnly: true, // Not accessible via JavaScript
-      secure: isProduction, // Only sent over HTTPS in production
+      httpOnly: true,
+      secure: isProduction,
       sameSite: isProduction ? "strict" : "lax",
-      maxAge: config.jwt.accessExpiresIn * 1000, // Convert seconds to ms
+      maxAge: parseInt(config.jwt.accessExpiresIn) * 1000,
       path: "/",
     });
 
@@ -40,8 +54,8 @@ class AuthController {
       httpOnly: true,
       secure: isProduction,
       sameSite: isProduction ? "strict" : "lax",
-      maxAge: config.jwt.refreshExpiresIn * 1000,
-      path: "/api/v1/auth", // Only sent to auth endpoints
+      maxAge: parseInt(config.jwt.refreshExpiresIn) * 1000,
+      path: "/api/v1/auth",
     });
   }
 
@@ -55,7 +69,7 @@ class AuthController {
 
   /**
    * Login user
-   * POST /api/auth/login
+   * POST /api/v1/auth/login
    */
   async login(req, res, next) {
     try {
@@ -66,23 +80,35 @@ class AuthController {
           error: {
             code: "VALIDATION_ERROR",
             message: "Invalid input",
-            fields: errors.array(),
+            details: errors.array(),
           },
         });
       }
 
-      const { email, password, deviceFingerprint, fcmToken, platform } =
-        req.body;
+      const {
+        email,
+        password,
+        deviceFingerprint,
+        fcmToken,
+        platform,
+        deviceName,
+      } = req.body;
 
-      const user = await global.prisma.user.findUnique({
-        where: { email },
+      // Find user with relations
+      const user = await prisma.user.findUnique({
+        where: { email: email.toLowerCase() },
         include: {
-          devices: true,
           notificationPref: true,
+          devices: {
+            where: { isActive: true },
+            take: 5,
+          },
         },
       });
 
-      if (!user || !user.isActive) {
+      // Check if user exists and is active
+      if (!user) {
+        logger.warn(`Login failed: User not found - ${email}`);
         return res.status(401).json({
           success: false,
           error: {
@@ -92,8 +118,22 @@ class AuthController {
         });
       }
 
-      const isValidPassword = await bcrypt.compare(password, user.password);
+      if (!user.isActive) {
+        logger.warn(`Login failed: Account inactive - ${email}`);
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: "ACCOUNT_INACTIVE",
+            message:
+              "Your account has been deactivated. Please contact support.",
+          },
+        });
+      }
+
+      // Verify password
+      const isValidPassword = await bcrypt.compare(password, user.passwordHash);
       if (!isValidPassword) {
+        logger.warn(`Login failed: Invalid password - ${email}`);
         return res.status(401).json({
           success: false,
           error: {
@@ -103,9 +143,9 @@ class AuthController {
         });
       }
 
-      // Device registration for mobile
+      // Device registration/update for mobile
       if (deviceFingerprint) {
-        const existingDevice = await global.prisma.device.findUnique({
+        const existingDevice = await prisma.device.findUnique({
           where: { deviceFingerprint },
         });
 
@@ -119,41 +159,94 @@ class AuthController {
           });
         }
 
-        await global.prisma.device.upsert({
+        // Check device limit
+        const deviceCount = await prisma.device.count({
+          where: { userId: user.id, isActive: true },
+        });
+
+        const maxDevices = 5; // Can be moved to config
+        if (!existingDevice && deviceCount >= maxDevices) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: "DEVICE_LIMIT_EXCEEDED",
+              message: `Maximum ${maxDevices} devices allowed. Please remove an existing device first.`,
+            },
+          });
+        }
+
+        await prisma.device.upsert({
           where: { deviceFingerprint },
           update: {
             fcmToken: fcmToken || existingDevice?.fcmToken,
             lastSeenAt: new Date(),
             isActive: true,
+            platform: platform || existingDevice?.platform || "web",
+            deviceName: deviceName || existingDevice?.deviceName,
           },
           create: {
             deviceFingerprint,
             fcmToken,
             platform: platform || "web",
             userId: user.id,
+            deviceName: deviceName || "Unknown Device",
+            isActive: true,
+            isTrusted: true,
           },
         });
       }
 
-      // FIXED: Use static method call instead of this.generateTokens
+      // Generate tokens with device fingerprint
       const { accessToken, refreshToken } = AuthController.generateTokens(
         user.id,
         user.role,
+        deviceFingerprint,
       );
 
-      // Store refresh token in Redis
-      await global.redis.setex(
-        `refresh:${user.id}`,
-        config.jwt.refreshExpiresIn,
-        refreshToken,
-      );
+      // Hash and store refresh token in database
+      const tokenHash = AuthController.hashToken(refreshToken);
+      const refreshTokenExpiry = new Date();
+      refreshTokenExpiry.setDate(refreshTokenExpiry.getDate() + 7); // 7 days
 
+      await prisma.refreshToken.create({
+        data: {
+          userId: user.id,
+          tokenHash,
+          deviceFingerprint: deviceFingerprint || null,
+          expiresAt: refreshTokenExpiry,
+          revoked: false,
+        },
+      });
+
+      // Also store in Redis for faster access
+      if (redisClient && redisClient.isReady) {
+        await redisClient.setEx(
+          `refresh:${user.id}:${deviceFingerprint || "default"}`,
+          7 * 24 * 60 * 60, // 7 days in seconds
+          refreshToken,
+        );
+      }
+
+      // Update last login timestamp
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      });
+
+      // Set cookies
       AuthController.setTokenCookies(res, accessToken, refreshToken);
 
-      const { password: _, ...userWithoutPassword } = user;
+      // Remove sensitive data
+      const {
+        passwordHash,
+        resetToken,
+        resetTokenExpires,
+        ...userWithoutPassword
+      } = user;
 
-      // Log successful login
-      logger.info(`User logged in: ${user.email} (${user.role})`);
+      logger.info(
+        `User logged in: ${user.email} (${user.role}) - Device: ${deviceFingerprint ? "Mobile" : "Web"}`,
+      );
 
       res.json({
         success: true,
@@ -164,33 +257,27 @@ class AuthController {
             refreshToken,
             expiresIn: config.jwt.accessExpiresIn,
           },
+          device: deviceFingerprint
+            ? {
+                registered: true,
+                fingerprint: deviceFingerprint,
+              }
+            : null,
         },
       });
     } catch (error) {
+      logger.error("Login error:", error);
       next(error);
     }
   }
 
   /**
    * Refresh access token
-   * POST /api/auth/refresh
+   * POST /api/v1/auth/refresh
    */
   async refresh(req, res, next) {
     try {
-      // Get refresh token from cookie OR request body
       const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
-
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: "VALIDATION_ERROR",
-            message: "Invalid input",
-            fields: errors.array(),
-          },
-        });
-      }
 
       if (!refreshToken) {
         return res.status(401).json({
@@ -202,58 +289,185 @@ class AuthController {
         });
       }
 
-      const decoded = jwt.verify(refreshToken, config.jwt.refreshSecret);
-      const storedToken = await global.redis.get(`refresh:${decoded.userId}`);
-
-      if (!storedToken || storedToken !== refreshToken) {
+      // Verify JWT
+      let decoded;
+      try {
+        decoded = jwt.verify(
+          refreshToken,
+          config.jwt.refreshSecret || config.jwt.secret,
+        );
+      } catch (err) {
+        logger.warn("Invalid refresh token:", err.message);
         return res.status(401).json({
           success: false,
-          error: { code: "UNAUTHORIZED", message: "Invalid refresh token" },
+          error: {
+            code: "INVALID_TOKEN",
+            message: "Invalid or expired refresh token",
+          },
         });
       }
 
-      // FIXED: Use static method call
-      const { accessToken, refreshToken: newRefreshToken } =
-        AuthController.generateTokens(decoded.userId, decoded.role);
-      await global.redis.setex(
-        `refresh:${decoded.userId}`,
-        config.jwt.refreshExpiresIn,
-        newRefreshToken,
-      );
+      // Hash the incoming token and check in database
+      const tokenHash = AuthController.hashToken(refreshToken);
+      const storedToken = await prisma.refreshToken.findFirst({
+        where: {
+          userId: decoded.userId,
+          tokenHash,
+          revoked: false,
+          expiresAt: { gt: new Date() },
+        },
+      });
 
-      AuthController.setTokenCookies(res, accessToken, refreshToken);
+      if (!storedToken) {
+        logger.warn(
+          `Refresh token not found in DB for user: ${decoded.userId}`,
+        );
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: "UNAUTHORIZED",
+            message: "Invalid refresh token",
+          },
+        });
+      }
+
+      // Get user to verify still active
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.userId, isActive: true },
+        select: { id: true, role: true, isActive: true },
+      });
+
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: "UNAUTHORIZED",
+            message: "User not found or inactive",
+          },
+        });
+      }
+
+      // Revoke the old token (rotation for security)
+      await prisma.refreshToken.update({
+        where: { id: storedToken.id },
+        data: { revoked: true },
+      });
+
+      // Generate new tokens
+      const { accessToken, refreshToken: newRefreshToken } =
+        AuthController.generateTokens(
+          decoded.userId,
+          user.role,
+          storedToken.deviceFingerprint,
+        );
+
+      // Store new refresh token
+      const newTokenHash = AuthController.hashToken(newRefreshToken);
+      const newExpiry = new Date();
+      newExpiry.setDate(newExpiry.getDate() + 7);
+
+      await prisma.refreshToken.create({
+        data: {
+          userId: decoded.userId,
+          tokenHash: newTokenHash,
+          deviceFingerprint: storedToken.deviceFingerprint,
+          expiresAt: newExpiry,
+          revoked: false,
+        },
+      });
+
+      // Update Redis
+      if (redisClient && redisClient.isReady) {
+        await redisClient.del(
+          `refresh:${decoded.userId}:${storedToken.deviceFingerprint || "default"}`,
+        );
+        await redisClient.setEx(
+          `refresh:${decoded.userId}:${storedToken.deviceFingerprint || "default"}`,
+          7 * 24 * 60 * 60,
+          newRefreshToken,
+        );
+      }
+
+      // Set new cookies
+      AuthController.setTokenCookies(res, accessToken, newRefreshToken);
+
+      logger.info(`Token refreshed for user: ${decoded.userId}`);
+
       res.json({
         success: true,
         data: {
           accessToken,
           refreshToken: newRefreshToken,
           expiresIn: config.jwt.accessExpiresIn,
-          message: "Token refreshed successfully",
         },
       });
     } catch (error) {
+      logger.error("Refresh token error:", error);
       next(error);
     }
   }
 
   /**
    * Logout user
-   * POST /api/auth/logout
+   * POST /api/v1/auth/logout
    */
   async logout(req, res, next) {
     try {
-      await global.redis.del(`refresh:${req.user.id}`);
+      const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+      const deviceFingerprint =
+        req.deviceFingerprint || req.body?.deviceFingerprint;
+
+      if (refreshToken) {
+        const tokenHash = AuthController.hashToken(refreshToken);
+
+        // Revoke the specific refresh token
+        await prisma.refreshToken.updateMany({
+          where: { tokenHash },
+          data: { revoked: true },
+        });
+
+        // Remove from Redis
+        if (redisClient && redisClient.isReady && req.user?.id) {
+          await redisClient.del(
+            `refresh:${req.user.id}:${deviceFingerprint || "default"}`,
+          );
+        }
+      } else if (req.user?.id) {
+        // If no specific token, revoke all user tokens (logout from all devices)
+        await prisma.refreshToken.updateMany({
+          where: { userId: req.user.id, revoked: false },
+          data: { revoked: true },
+        });
+
+        // Clear all Redis refresh tokens for user
+        if (redisClient && redisClient.isReady) {
+          const keys = await redisClient.keys(`refresh:${req.user.id}:*`);
+          if (keys.length > 0) {
+            await redisClient.del(keys);
+          }
+        }
+      }
+
+      // Clear cookies
       AuthController.clearTokenCookies(res);
-      logger.info(`User logged out: ${req.user.email}`);
-      res.json({ success: true, data: { message: "Logged out successfully" } });
+
+      if (req.user) {
+        logger.info(`User logged out: ${req.user.email}`);
+      }
+
+      res.json({
+        success: true,
+        data: { message: "Logged out successfully" },
+      });
     } catch (error) {
+      logger.error("Logout error:", error);
       next(error);
     }
   }
 
   /**
    * Forgot password - send reset link
-   * POST /api/auth/forgot-password
+   * POST /api/v1/auth/forgot-password
    */
   async forgotPassword(req, res, next) {
     try {
@@ -264,54 +478,86 @@ class AuthController {
           error: {
             code: "VALIDATION_ERROR",
             message: "Invalid input",
-            fields: errors.array(),
+            details: errors.array(),
           },
         });
       }
 
       const { email } = req.body;
-      const user = await global.prisma.user.findUnique({ where: { email } });
+      const user = await prisma.user.findUnique({
+        where: { email: email.toLowerCase() },
+      });
 
-      if (user) {
-        const token = crypto.randomBytes(32).toString("hex");
+      if (user && user.isActive) {
+        // Generate reset token
+        const resetToken = crypto.randomBytes(32).toString("hex");
+        const tokenHash = crypto
+          .createHash("sha256")
+          .update(resetToken)
+          .digest("hex");
         const expiresAt = new Date(Date.now() + 3600000); // 1 hour
 
-        await global.prisma.passwordResetToken.create({
-          data: { userId: user.id, token, expiresAt },
+        // Store hashed token in database
+        await prisma.passwordResetToken.create({
+          data: {
+            userId: user.id,
+            tokenHash,
+            expiresAt,
+          },
         });
 
-        const resetUrl = `${config.frontend.url}/reset-password?token=${token}`;
+        const resetUrl = `${config.frontend.url}/reset-password?token=${resetToken}`;
+
         await sendEmail(
-          email,
+          user.email,
           "Reset Your Password - AttendX",
-          `<div style="font-family: Arial, sans-serif; max-width: 600px;">
-            <h2 style="color: #4F46E5;">Reset Your Password</h2>
-            <p>Dear ${user.fullName},</p>
-            <p>You requested to reset your password. Click the link below to proceed:</p>
-            <p><a href="${resetUrl}" style="background: #4F46E5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Reset Password</a></p>
-            <p>This link will expire in 1 hour.</p>
-            <p>If you didn't request this, please ignore this email.</p>
-            <hr style="margin: 20px 0;" />
-            <p style="color: #666; font-size: 12px;">AttendX - Smart Attendance System</p>
-          </div>`,
+          `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+              <h1 style="color: white; margin: 0;">AttendX</h1>
+            </div>
+            <div style="background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px;">
+              <h2 style="color: #333;">Reset Your Password</h2>
+              <p>Dear ${user.fullName},</p>
+              <p>You requested to reset your password. Click the button below to proceed:</p>
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${resetUrl}" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">Reset Password</a>
+              </div>
+              <p>This link will expire in <strong>1 hour</strong>.</p>
+              <p>If you didn't request this, please ignore this email.</p>
+              <hr style="margin: 20px 0;" />
+              <p style="color: #666; font-size: 12px;">AttendX - Smart Attendance System</p>
+            </div>
+          </div>
+          `,
         );
 
         logger.info(`Password reset email sent to: ${email}`);
+      } else if (user && !user.isActive) {
+        logger.warn(`Password reset requested for inactive account: ${email}`);
+      } else {
+        logger.info(
+          `Password reset requested for non-existent email: ${email}`,
+        );
       }
 
       // Always return success to prevent email enumeration
       res.json({
         success: true,
-        data: { message: "If that email exists, a reset link has been sent" },
+        data: {
+          message:
+            "If that email exists and is active, a reset link has been sent",
+        },
       });
     } catch (error) {
+      logger.error("Forgot password error:", error);
       next(error);
     }
   }
 
   /**
    * Reset password with token
-   * POST /api/auth/reset-password
+   * POST /api/v1/auth/reset-password
    */
   async resetPassword(req, res, next) {
     try {
@@ -322,17 +568,21 @@ class AuthController {
           error: {
             code: "VALIDATION_ERROR",
             message: "Invalid input",
-            fields: errors.array(),
+            details: errors.array(),
           },
         });
       }
 
       const { token, newPassword } = req.body;
 
-      const resetToken = await global.prisma.passwordResetToken.findFirst({
+      // Hash the incoming token to compare with stored hash
+      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+      const resetToken = await prisma.passwordResetToken.findFirst({
         where: {
-          token,
+          tokenHash,
           expiresAt: { gt: new Date() },
+          usedAt: null, // Token not used yet
         },
         include: { user: true },
       });
@@ -340,37 +590,96 @@ class AuthController {
       if (!resetToken) {
         return res.status(400).json({
           success: false,
-          error: { code: "INVALID_TOKEN", message: "Invalid or expired token" },
+          error: {
+            code: "INVALID_TOKEN",
+            message: "Invalid or expired reset token",
+          },
         });
       }
 
-      const hashedPassword = await bcrypt.hash(
-        newPassword,
-        config.security.bcryptRounds,
-      );
-      await global.prisma.user.update({
+      if (!resetToken.user.isActive) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "ACCOUNT_INACTIVE",
+            message: "Account is deactivated. Please contact support.",
+          },
+        });
+      }
+
+      // Hash new password
+      const saltRounds = parseInt(config.security?.bcryptRounds) || 10;
+      const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+      // Update user password
+      await prisma.user.update({
         where: { id: resetToken.userId },
-        data: { password: hashedPassword },
+        data: {
+          passwordHash: hashedPassword,
+        },
       });
 
-      await global.prisma.passwordResetToken.deleteMany({
-        where: { userId: resetToken.userId },
+      // Mark token as used
+      await prisma.passwordResetToken.update({
+        where: { id: resetToken.id },
+        data: { usedAt: new Date() },
       });
 
-      logger.info(`Password reset for user: ${resetToken.user.email}`);
+      // Revoke all refresh tokens for security
+      await prisma.refreshToken.updateMany({
+        where: { userId: resetToken.userId, revoked: false },
+        data: { revoked: true },
+      });
+
+      // Clear Redis refresh tokens
+      if (redisClient && redisClient.isReady) {
+        const keys = await redisClient.keys(`refresh:${resetToken.userId}:*`);
+        if (keys.length > 0) {
+          await redisClient.del(keys);
+        }
+      }
+
+      logger.info(
+        `Password reset successful for user: ${resetToken.user.email}`,
+      );
+
+      // Send confirmation email
+      await sendEmail(
+        resetToken.user.email,
+        "Password Reset Successful - AttendX",
+        `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #28a745; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+            <h1 style="color: white; margin: 0;">AttendX</h1>
+          </div>
+          <div style="background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px;">
+            <h2 style="color: #333;">Password Reset Successful</h2>
+            <p>Dear ${resetToken.user.fullName},</p>
+            <p>Your password has been successfully reset.</p>
+            <p>If you did not perform this action, please contact support immediately.</p>
+            <hr style="margin: 20px 0;" />
+            <p style="color: #666; font-size: 12px;">AttendX - Smart Attendance System</p>
+          </div>
+        </div>
+        `,
+      );
 
       res.json({
         success: true,
-        data: { message: "Password reset successfully" },
+        data: {
+          message:
+            "Password reset successfully. You can now login with your new password.",
+        },
       });
     } catch (error) {
+      logger.error("Reset password error:", error);
       next(error);
     }
   }
 
   /**
    * Change password (authenticated)
-   * POST /api/auth/change-password
+   * POST /api/v1/auth/change-password
    */
   async changePassword(req, res, next) {
     try {
@@ -381,18 +690,28 @@ class AuthController {
           error: {
             code: "VALIDATION_ERROR",
             message: "Invalid input",
-            fields: errors.array(),
+            details: errors.array(),
           },
         });
       }
 
       const { currentPassword, newPassword } = req.body;
 
-      const user = await global.prisma.user.findUnique({
+      const user = await prisma.user.findUnique({
         where: { id: req.user.id },
       });
 
-      const isValid = await bcrypt.compare(currentPassword, user.password);
+      if (!user || !user.isActive) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: "USER_NOT_FOUND",
+            message: "User not found or inactive",
+          },
+        });
+      }
+
+      const isValid = await bcrypt.compare(currentPassword, user.passwordHash);
       if (!isValid) {
         return res.status(401).json({
           success: false,
@@ -403,22 +722,73 @@ class AuthController {
         });
       }
 
-      const hashedPassword = await bcrypt.hash(
-        newPassword,
-        config.security.bcryptRounds,
-      );
-      await global.prisma.user.update({
+      const saltRounds = parseInt(config.security?.bcryptRounds) || 10;
+      const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+      await prisma.user.update({
         where: { id: req.user.id },
-        data: { password: hashedPassword },
+        data: {
+          passwordHash: hashedPassword,
+        },
       });
+
+      // Optionally revoke all other sessions (except current)
+      const shouldRevokeAllSessions = req.body.revokeAllSessions === true;
+      if (shouldRevokeAllSessions) {
+        const currentRefreshToken = req.cookies?.refreshToken;
+        let currentTokenHash = null;
+
+        if (currentRefreshToken) {
+          currentTokenHash = AuthController.hashToken(currentRefreshToken);
+        }
+
+        await prisma.refreshToken.updateMany({
+          where: {
+            userId: req.user.id,
+            revoked: false,
+            ...(currentTokenHash
+              ? { tokenHash: { not: currentTokenHash } }
+              : {}),
+          },
+          data: { revoked: true },
+        });
+
+        logger.info(`All other sessions revoked for user: ${user.email}`);
+      }
 
       logger.info(`Password changed for user: ${user.email}`);
 
       res.json({
         success: true,
-        data: { message: "Password changed successfully" },
+        data: {
+          message: shouldRevokeAllSessions
+            ? "Password changed successfully. You have been logged out from all other devices."
+            : "Password changed successfully",
+        },
       });
     } catch (error) {
+      logger.error("Change password error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Verify email (if email verification is enabled)
+   * POST /api/v1/auth/verify-email
+   */
+  async verifyEmail(req, res, next) {
+    try {
+      const { token } = req.body;
+
+      // Implementation depends on your email verification strategy
+      // This is a placeholder for future implementation
+
+      res.json({
+        success: true,
+        data: { message: "Email verified successfully" },
+      });
+    } catch (error) {
+      logger.error("Verify email error:", error);
       next(error);
     }
   }

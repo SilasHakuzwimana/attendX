@@ -7,29 +7,12 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ==================== ENUMS ====================
+
 enum UserRole {
   student
   lecturer
   admin
-}
-
-enum SessionStatus {
-  active
-  closed
-  expired
-}
-
-enum AttendanceStatus {
-  present
-  absent
-  excused
-  late
-}
-
-enum SubmissionMethod {
-  app
-  sms
-  manual
 }
 
 enum Platform {
@@ -38,18 +21,40 @@ enum Platform {
   web
 }
 
+enum SessionStatus {
+  active
+  closed
+  expired
+}
+
+enum CheckinMethod {
+  app
+  sms
+  manual
+}
+
+enum AttendanceStatus {
+  present
+  late
+  absent
+  excused
+}
+
+// ==================== MODELS ====================
+
 model User {
-  id          String   @id @default(uuid())
-  fullName    String
-  email       String   @unique
-  phone       String?  @unique
-  password    String
-  role        UserRole
-  regNumber   String?  @unique // Only for students
-  staffNumber String?  @unique // Only for lecturers & admins
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                  String                  @id @default(uuid())
+  fullName            String                  @map("full_name")
+  email               String                  @unique
+  phone               String?                 @unique
+  passwordHash        String                  @map("password_hash")
+  role                UserRole
+  regNumber           String?                 @unique @map("reg_number") // Only for students
+  staffNumber         String?                 @unique @map("staff_number") // Only for lecturers & admins
+  isActive            Boolean                 @default(true) @map("is_active")
+  lastLoginAt         DateTime?               @map("last_login_at")
+  createdAt           DateTime                @default(now()) @map("created_at")
+  updatedAt           DateTime                @updatedAt @map("updated_at")
 
   // Relations
   taughtCourses       Course[]                @relation("LecturerCourses")
@@ -59,149 +64,326 @@ model User {
   attendanceRecords   AttendanceRecord[]
   devices             Device[]
   notificationPref    NotificationPreference?
-  PasswordResetTokens PasswordResetToken[]
+  passwordResetTokens PasswordResetToken[]
+  refreshTokens       RefreshToken[]
+
+  @@index([email])
+  @@index([role])
+  @@index([isActive])
+  @@index([regNumber])
+  @@index([staffNumber])
+  @@map("users")
+}
+
+model RefreshToken {
+  id                 String   @id @default(uuid())
+  userId             String   @map("user_id")
+  tokenHash          String   @unique @map("token_hash")
+  deviceFingerprint  String?  @map("device_fingerprint")
+  expiresAt          DateTime @map("expires_at")
+  revoked            Boolean  @default(false)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revoked])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  usedAt    DateTime? @map("used_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([usedAt])
+  @@map("password_reset_tokens")
 }
 
 model Course {
   id          String   @id @default(uuid())
   code        String   @unique
   name        String
-  description String?
+  description String?   @map("description")
   credits     Int      @default(3)
-  semester    String
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  academicYear String  @map("academic_year") // e.g., "2024-2025"
+  semester    Int      @map("semester") // 1 or 2
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
-  lecturerId String
-  lecturer   User   @relation("LecturerCourses", fields: [lecturerId], references: [id])
+  lecturerId  String   @map("lecturer_id")
+  lecturer    User     @relation("LecturerCourses", fields: [lecturerId], references: [id])
 
   sessions    Session[]
   enrollments Enrollment[]
+
+  @@index([lecturerId])
+  @@index([code])
+  @@index([isActive])
+  @@index([academicYear, semester])
+  @@map("courses")
 }
 
 model Enrollment {
   id         String   @id @default(uuid())
-  studentId  String
-  courseId   String
-  enrolledAt DateTime @default(now())
+  studentId  String   @map("student_id")
+  courseId   String   @map("course_id")
+  enrolledAt DateTime @default(now()) @map("enrolled_at")
+  isActive   Boolean  @default(true) @map("is_active")
+  droppedAt  DateTime? @map("dropped_at")
 
-  student User   @relation(fields: [studentId], references: [id])
-  course  Course @relation(fields: [courseId], references: [id])
+  student    User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
 
   @@unique([studentId, courseId])
+  @@index([studentId])
+  @@index([courseId])
+  @@index([isActive])
+  @@map("enrollments")
 }
 
 model Classroom {
   id        String   @id @default(uuid())
   name      String
   building  String?
+  code      String?  @unique @map("code") // Room code like "LT-A", "RM-204"
   capacity  Int?
-  latitude  Float
-  longitude Float
-  radiusM   Float    @default(30.0)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  latitude  Decimal  @db.Decimal(10, 7)
+  longitude Decimal  @db.Decimal(10, 7)
+  radiusM   Int      @default(50) @map("radius_m")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  sessions Session[]
+  sessions  Session[]
+
+  @@index([isActive])
+  @@index([building])
+  @@map("classrooms")
 }
 
 model Session {
-  id          String        @id @default(uuid())
-  sessionCode String        @unique
-  checkinOpen Boolean       @default(true)
-  status      SessionStatus @default(active)
-  startedAt   DateTime      @default(now())
-  expiresAt   DateTime
-  closedAt    DateTime?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id           String        @id @default(uuid())
+  sessionCode  String        @unique @map("session_code")
+  checkinOpen  Boolean       @default(true) @map("checkin_open")
+  status       SessionStatus @default(active)
+  startedAt    DateTime      @default(now()) @map("started_at")
+  expiresAt    DateTime      @map("expires_at")
+  closedAt     DateTime?     @map("closed_at")
+  durationMinutes Int        @default(90) @map("duration_minutes")
+  checkinsCount Int          @default(0) @map("checkins_count") // Denormalized for performance
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
 
-  courseId    String
-  classroomId String
-  lecturerId  String
+  courseId     String        @map("course_id")
+  classroomId  String        @map("classroom_id")
+  lecturerId   String        @map("lecturer_id")
 
-  course    Course    @relation(fields: [courseId], references: [id])
-  classroom Classroom @relation(fields: [classroomId], references: [id])
-  lecturer  User      @relation("LecturerSessions", fields: [lecturerId], references: [id])
+  course       Course        @relation(fields: [courseId], references: [id])
+  classroom    Classroom     @relation(fields: [classroomId], references: [id])
+  lecturer     User          @relation("LecturerSessions", fields: [lecturerId], references: [id])
 
   roomCheckins      RoomCheckin[]
   attendanceRecords AttendanceRecord[]
+
+  @@index([courseId])
+  @@index([classroomId])
+  @@index([lecturerId])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([sessionCode])
+  @@index([startedAt])
+  @@map("sessions")
 }
 
 model RoomCheckin {
-  id                String           @id @default(uuid())
-  sessionId         String
-  studentId         String
-  latitude          Float
-  longitude         Float
-  distanceM         Float?
-  deviceFingerprint String
-  submissionMethod  SubmissionMethod @default(app)
-  checkedInAt       DateTime         @default(now())
+  id                String         @id @default(uuid())
+  sessionId         String         @map("session_id")
+  studentId         String         @map("student_id")
+  latitude          Decimal        @db.Decimal(10, 7)
+  longitude         Decimal        @db.Decimal(10, 7)
+  distanceM         Decimal?       @db.Decimal(8, 2) @map("distance_m")
+  deviceFingerprint String         @map("device_fingerprint")
+  submissionMethod  CheckinMethod  @default(app) @map("submission_method")
+  checkedInAt       DateTime       @default(now()) @map("checked_in_at")
+  ipAddress         String?        @map("ip_address") // For security logging
+  userAgent         String?        @map("user_agent") // For security logging
 
-  session Session @relation(fields: [sessionId], references: [id])
-  student User    @relation(fields: [studentId], references: [id])
+  session           Session        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student           User           @relation(fields: [studentId], references: [id])
+
+  attendanceRecord  AttendanceRecord?
 
   @@unique([sessionId, studentId])
+  @@index([sessionId])
+  @@index([studentId])
+  @@index([checkedInAt])
+  @@index([deviceFingerprint])
+  @@map("room_checkins")
 }
 
 model AttendanceRecord {
-  id               String            @id @default(uuid())
-  sessionId        String
-  studentId        String
-  status           AttendanceStatus
-  submissionMethod SubmissionMethod?
-  geofencePassed   Boolean?
-  markedAt         DateTime          @default(now())
-  overriddenAt     DateTime?
-  overriddenBy     String?
-  overrideReason   String?
+  id                String           @id @default(uuid())
+  sessionId         String           @map("session_id")
+  studentId         String           @map("student_id")
+  status            AttendanceStatus
+  checkinId         String?          @unique @map("checkin_id") // Link to RoomCheckin if present
+  submissionMethod  CheckinMethod?   @map("submission_method")
+  geofencePassed    Boolean?         @map("geofence_passed")
+  distanceM         Decimal?         @db.Decimal(8, 2) @map("distance_m") // Store distance at finalization
+  markedAt          DateTime         @default(now()) @map("marked_at")
+  overriddenAt      DateTime?        @map("overridden_at")
+  overriddenBy      String?          @map("overridden_by")
+  overrideReason    String?          @map("override_reason")
+  notes             String?          // Additional notes
 
-  session Session @relation(fields: [sessionId], references: [id])
-  student User    @relation(fields: [studentId], references: [id])
+  session           Session          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student           User             @relation(fields: [studentId], references: [id])
+
+  @@unique([sessionId, studentId])
+  @@index([sessionId])
+  @@index([studentId])
+  @@index([status])
+  @@index([markedAt])
+  @@map("attendance_records")
 }
 
 model Device {
   id                String   @id @default(uuid())
-  userId            String
-  deviceFingerprint String   @unique
-  fcmToken          String?
+  userId            String   @map("user_id")
+  deviceFingerprint String   @unique @map("device_fingerprint")
+  deviceName        String?  @map("device_name")
+  fcmToken          String?  @map("fcm_token")
   platform          Platform
-  isActive          Boolean  @default(true)
-  registeredAt      DateTime @default(now())
-  lastSeenAt        DateTime @default(now())
+  deviceModel       String?  @map("device_model")
+  osVersion         String?  @map("os_version")
+  appVersion        String?  @map("app_version")
+  isActive          Boolean  @default(true) @map("is_active")
+  isTrusted         Boolean  @default(true) @map("is_trusted")
+  registeredAt      DateTime @default(now()) @map("registered_at")
+  lastSeenAt        DateTime @default(now()) @map("last_seen_at")
+  lastIpAddress     String?  @map("last_ip_address")
 
-  user User @relation(fields: [userId], references: [id])
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive])
+  @@index([lastSeenAt])
+  @@map("devices")
 }
 
 model NotificationPreference {
-  userId                 String  @id
-  attendanceConfirmation Boolean @default(true)
-  missedAttendance       Boolean @default(true)
-  absenceWarning         Boolean @default(true)
-  sessionStarted         Boolean @default(true)
+  id                    String   @id @default(uuid())
+  userId                String   @unique @map("user_id")
+  emailNotifications    Boolean  @default(true) @map("email_notifications")
+  pushNotifications     Boolean  @default(true) @map("push_notifications")
+  smsNotifications      Boolean  @default(false) @map("sms_notifications")
+  sessionReminders      Boolean  @default(true) @map("session_reminders")
+  attendanceReports     Boolean  @default(false) @map("attendance_reports")
+  sessionStarted        Boolean  @default(true) @map("session_started")
+  sessionClosed         Boolean  @default(false) @map("session_closed")
+  attendanceConfirmation Boolean @default(true) @map("attendance_confirmation")
+  missedAttendance      Boolean  @default(true) @map("missed_attendance")
+  absenceWarning        Boolean  @default(true) @map("absence_warning")
+  weeklyDigest          Boolean  @default(false) @map("weekly_digest")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id])
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
 }
 
 model SystemConfig {
-  id                                 String   @id @default("singleton")
-  defaultGeofenceRadiusM             Float    @default(30.0)
-  sessionCodeTtlMinutes              Int      @default(90)
-  consecutiveAbsenceWarningThreshold Int      @default(2)
-  smsEnabled                         Boolean  @default(true)
-  emailNotificationsEnabled          Boolean  @default(true)
-  pushNotificationsEnabled           Boolean  @default(true)
-  updatedAt                          DateTime @updatedAt
+  id                                   String   @id @default("singleton")
+  defaultGeofenceRadiusM               Int      @default(50) @map("default_geofence_radius_m")
+  sessionCodeTtlMinutes                Int      @default(90) @map("session_code_ttl_minutes")
+  consecutiveAbsenceWarningThreshold   Int      @default(2) @map("consecutive_absence_warning_threshold")
+  smsEnabled                           Boolean  @default(true) @map("sms_enabled")
+  emailNotificationsEnabled            Boolean  @default(true) @map("email_notifications_enabled")
+  pushNotificationsEnabled             Boolean  @default(true) @map("push_notifications_enabled")
+  maxConcurrentSessionsPerLecturer     Int      @default(5) @map("max_concurrent_sessions_per_lecturer")
+  maxDevicePerUser                     Int      @default(5) @map("max_devices_per_user")
+  sessionCleanupIntervalHours          Int      @default(24) @map("session_cleanup_interval_hours")
+  checkinGracePeriodMinutes            Int      @default(15) @map("checkin_grace_period_minutes")
+  updatedAt                            DateTime @updatedAt @map("updated_at")
+  updatedBy                            String?  @map("updated_by")
+
+  @@map("system_configs")
 }
 
-model PasswordResetToken {
-  id        String   @id @default(uuid())
-  userId    String
-  token     String   @unique
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+model NotificationLog {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  type        String   // email, push, sms
+  title       String
+  body        String
+  data        Json?    // Additional data payload
+  status      String   // sent, failed, pending
+  error       String?  // Error message if failed
+  sentAt      DateTime @default(now()) @map("sent_at")
+  deliveredAt DateTime? @map("delivered_at")
 
-  user User @relation(fields: [userId], references: [id])
+  @@index([userId])
+  @@index([sentAt])
+  @@index([status])
+  @@map("notification_logs")
 }
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?  @map("user_id")
+  action      String   // CREATE, UPDATE, DELETE, LOGIN, LOGOUT, etc.
+  entity      String   // User, Course, Session, etc.
+  entityId    String?  @map("entity_id")
+  oldValues   Json?    @map("old_values")
+  newValues   Json?    @map("new_values")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model BulkImportJob {
+  id          String   @id @default(uuid())
+  type        String   // students, courses, enrollments
+  status      String   // pending, processing, completed, failed
+  totalRecords Int     @default(0) @map("total_records")
+  processedRecords Int @default(0) @map("processed_records")
+  failedRecords Int    @default(0) @map("failed_records")
+  fileUrl     String?  @map("file_url")
+  errors      Json?    // Array of error objects
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdBy   String   @map("created_by")
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("bulk_import_jobs")
+}
+
+// ==================== VIEWS (for reporting) ====================
+
+// Note: Prisma doesn't support views directly, but you can create them manually:
+// CREATE VIEW attendance_summary_view AS ...
+// Then use $queryRaw to query them
+
+// ==================== HELPER FUNCTIONS ====================
+
+// To be added via PostgreSQL functions:
+// 1. update_updated_at_column() - For auto-updating timestamps
+// 2. calculate_distance(lat1, lon1, lat2, lon2) - Haversine formula
+// 3. get_attendance_rate(student_id, course_id) - Calculate attendance percentage

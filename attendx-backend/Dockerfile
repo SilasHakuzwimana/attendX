@@ -1,25 +1,18 @@
-# Dockerfile - Using Debian slim for better compatibility
-FROM node:20-slim
+# Dockerfile - Multi-stage build
+# Stage 1: Builder
+FROM node:20-slim AS builder
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    dumb-init \
-    openssl \
-    ca-certificates \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set environment variables
-ENV NODE_ENV=production
-ENV PRISMA_TELEMETRY_INFORMATION=skip
+RUN apt-get update && apt-get install -y openssl ca-certificates
 
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm@8.15.0
+RUN npm install -g pnpm@10.33.2
 
-# Copy package files
-COPY package.json pnpm-lock.yaml ./
+# Copy package files and prisma schema
+COPY package.json ./
+COPY pnpm-lock.yaml ./
+COPY prisma ./prisma
 
 # Install dependencies
 RUN pnpm install --frozen-lockfile
@@ -30,8 +23,27 @@ COPY . .
 # Generate Prisma client
 RUN npx prisma generate
 
-# Create necessary directories
+# Stage 2: Production
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y \
+    dumb-init \
+    openssl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy from builder
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/src ./src
+
+# Create directories
 RUN mkdir -p uploads logs temp
+
+ENV NODE_ENV=production
 
 # Create non-root user
 RUN groupadd -r attendx && useradd -r -g attendx attendx && \

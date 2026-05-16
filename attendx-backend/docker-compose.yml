@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:15-alpine
+    container_name: attendx_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: attendx_user
       POSTGRES_PASSWORD: attendx_pass
@@ -10,13 +12,17 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U attendx_user"]
+      test: ["CMD-SHELL", "pg_isready -U attendx_user -d attendx_db"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - attendx_network
 
   redis:
     image: redis:7-alpine
+    container_name: attendx_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -27,15 +33,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - attendx_network
 
   app:
     build: .
+    container_name: attendx_app
+    restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "3000:3000"  # Changed to 3000 to match your app
     environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://attendx_user:attendx_password@postgres:5432/attendx_db?schema=public
+      NODE_ENV: development  # Changed to development for now
+      PORT: 3000
+      DATABASE_URL: postgresql://attendx_user:attendx_pass@postgres:5432/attendx_db?schema=public
       REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: your-super-secret-access-key-change-this-in-production
+      JWT_REFRESH_SECRET: your-super-secret-refresh-key-change-this-in-production
+      FRONTEND_URL: http://localhost:3001
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,6 +58,13 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./logs:/app/logs
+      - /app/node_modules  # Prevent overwriting node_modules
+    networks:
+      - attendx_network
+
+networks:
+  attendx_network:
+    driver: bridge
 
 volumes:
   postgres_data:

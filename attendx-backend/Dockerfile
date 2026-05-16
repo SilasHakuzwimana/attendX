@@ -1,33 +1,46 @@
-FROM node:20-alpine
+# Dockerfile - Using Debian slim for better compatibility
+FROM node:20-slim
 
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    dumb-init \
+    openssl \
+    ca-certificates \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables
+ENV NODE_ENV=production
+ENV PRISMA_TELEMETRY_INFORMATION=skip
 
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@8.15.0
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
 
-# Install dependencies (skip prepare script to avoid loop)
-RUN pnpm install --frozen-lockfile --ignore-scripts
-
-# Run postinstall manually (generates Prisma client)
-RUN pnpm run postinstall || true
+# Install dependencies
+RUN pnpm install --frozen-lockfile
 
 # Copy source code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p uploads logs
+# Generate Prisma client
+RUN npx prisma generate
 
-# Expose port
+# Create necessary directories
+RUN mkdir -p uploads logs temp
+
+# Create non-root user
+RUN groupadd -r attendx && useradd -r -g attendx attendx && \
+    chown -R attendx:attendx /app
+
+USER attendx
+
 EXPOSE 3000
 
-# Use dumb-init to handle signals properly
 ENTRYPOINT ["dumb-init", "--"]
 
-# Start app (run migrations then start server)
-CMD ["sh", "-c", "pnpm run migrate:deploy && node src/server.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node src/server.js"]

@@ -17,7 +17,6 @@ const courseRoutes = require("./course.routes");
 const enrollmentRoutes = require("./enrollment.routes");
 const lecturerRoutes = require("./lecturer.routes");
 const reportRoutes = require("./report.routes");
-const notificationRoutes = require("./notification.routes");
 const alertRoutes = require("./alert.routes");
 const checkinRoutes = require("./checkin.routes");
 const dashboardRoutes = require("./dashboard.routes");
@@ -207,9 +206,6 @@ router.use("/enrollments", enrollmentRoutes);
 
 // Report Routes
 router.use("/reports", reportRoutes);
-
-// Notification Routes
-router.use("/notifications", notificationRoutes);
 
 // Alert Routes
 router.use("/alerts", alertRoutes);

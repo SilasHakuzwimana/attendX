@@ -8,7 +8,7 @@ const path = require("path");
 const config = require("./config");
 const {
   generalLimiter,
-  authLimiter,
+  loginLimiter,
 } = require("./middleware/rateLimit.middleware");
 const { errorHandler } = require("./middleware/error.middleware");
 const { versionMiddleware } = require("./middleware/version.middleware");
@@ -128,7 +128,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/api", generalLimiter);
 
 // Stricter rate limiter for auth routes
-app.use("/api/v1/auth", authLimiter);
+app.use("/api/v1/auth", loginLimiter);
 
 // ==================== API VERSION HEADERS ====================
 
@@ -144,7 +144,13 @@ app.use((req, res, next) => {
 });
 
 // ==================== VERSION MIDDLEWARE ====================
-app.use(versionMiddleware);
+if (versionMiddleware && typeof versionMiddleware === "function") {
+  app.use(versionMiddleware);
+} else {
+  logger.warn(
+    "versionMiddleware is not available, using default version header middleware",
+  );
+}
 
 // ==================== HEALTH CHECK ENDPOINTS ====================
 
@@ -262,7 +268,6 @@ app.get("/api/info", (req, res) => {
       courses: "/api/v1/courses",
       enrollments: "/api/v1/enrollments",
       reports: "/api/v1/reports",
-      notifications: "/api/v1/notifications",
       alerts: "/api/v1/alerts",
       dashboard: "/api/v1/dashboard",
       config: "/api/v1/config",

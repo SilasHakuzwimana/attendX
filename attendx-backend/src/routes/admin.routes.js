@@ -253,7 +253,7 @@ router.get(
   query("academicYear").optional().isString(),
   query("isActive").optional().isBoolean().toBoolean(),
   validate,
-  adminController.listCourses,
+  adminController.listCourses.bind(adminController),
 );
 
 /**
@@ -609,7 +609,7 @@ router.get(
   query("building").optional().isString().trim(),
   query("isActive").optional().isBoolean().toBoolean(),
   validate,
-  adminController.listClassrooms,
+  adminController.listClassrooms.bind(adminController),
 );
 
 /**
@@ -647,7 +647,7 @@ router.post(
     .isInt({ min: 1 })
     .withMessage("Capacity must be at least 1"),
   validate,
-  adminController.createClassroom,
+  adminController.createClassroom.bind(adminController),
 );
 
 /**
@@ -737,7 +737,7 @@ router.patch(
   body("radiusM").optional().isInt({ min: 1, max: 500 }),
   body("isActive").optional().isBoolean(),
   validate,
-  adminController.updateClassroom,
+  adminController.updateClassroom.bind(adminController),
 );
 
 /**
@@ -750,7 +750,7 @@ router.delete(
   param("classroomId").isUUID().withMessage("Invalid classroom ID format"),
   query("force").optional().isBoolean().toBoolean(),
   validate,
-  adminController.deleteClassroom,
+  adminController.deleteClassroom.bind(adminController),
 );
 
 // ==================== SYSTEM CONFIGURATION ====================
@@ -797,7 +797,7 @@ router.put(
     .isInt({ min: 0, max: 60 })
     .withMessage("Grace period must be between 0 and 60 minutes"),
   validate,
-  adminController.updateSystemConfig,
+  adminController.updateSystemConfig.bind(adminController),
 );
 
 /**
@@ -829,7 +829,7 @@ router.get(
   query("from").optional().isISO8601().toDate(),
   query("to").optional().isISO8601().toDate(),
   validate,
-  adminController.getAuditLogs,
+  adminController.getAuditLogs.bind(adminController),
 );
 
 // ==================== REPORTS (Admin) ====================

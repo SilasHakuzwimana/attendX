@@ -956,6 +956,937 @@ class AdminController {
       next(error);
     }
   }
+
+  /**
+   * List all courses with filtering
+   * GET /api/v1/admin/courses
+   */
+  async listCourses(req, res, next) {
+    try {
+      const {
+        page = 1,
+        limit = 20,
+        search,
+        lecturerId,
+        semester,
+        academicYear,
+        isActive,
+        sortBy = "createdAt",
+        sortOrder = "desc",
+      } = req.query;
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const take = parseInt(limit);
+
+      const where = {};
+      if (search) {
+        where.OR = [
+          { code: { contains: search, mode: "insensitive" } },
+          { name: { contains: search, mode: "insensitive" } },
+          { description: { contains: search, mode: "insensitive" } },
+        ];
+      }
+      if (lecturerId) where.lecturerId = lecturerId;
+      if (semester) where.semester = semester;
+      if (academicYear) where.academicYear = academicYear;
+      if (isActive !== undefined) where.isActive = isActive === "true";
+
+      const [courses, total] = await Promise.all([
+        prisma.course.findMany({
+          where,
+          include: {
+            lecturer: {
+              select: {
+                id: true,
+                fullName: true,
+                email: true,
+                staffNumber: true,
+              },
+            },
+            _count: {
+              select: {
+                enrollments: {
+                  where: { isActive: true },
+                },
+                sessions: true,
+              },
+            },
+          },
+          orderBy: { [sortBy]: sortOrder },
+          skip,
+          take,
+        }),
+        prisma.course.count({ where }),
+      ]);
+
+      // Add statistics to each course
+      const coursesWithStats = await Promise.all(
+        courses.map(async (course) => {
+          const totalCheckins = await prisma.roomCheckin.count({
+            where: { session: { courseId: course.id } },
+          });
+
+          const totalEnrolled = course._count.enrollments;
+          const totalSessions = course._count.sessions;
+          const expectedAttendances = totalEnrolled * totalSessions;
+          const attendanceRate =
+            expectedAttendances > 0
+              ? (totalCheckins / expectedAttendances) * 100
+              : 0;
+
+          return {
+            ...course,
+            statistics: {
+              totalEnrolled,
+              totalSessions,
+              totalCheckins,
+              attendanceRate: parseFloat(attendanceRate.toFixed(1)),
+            },
+          };
+        }),
+      );
+
+      res.json({
+        success: true,
+        data: coursesWithStats,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit)),
+          hasNextPage: skip + take < total,
+          hasPrevPage: page > 1,
+        },
+      });
+    } catch (error) {
+      logger.error("List courses error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Create new course
+   * POST /api/v1/admin/courses
+   */
+  async createCourse(req, res, next) {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Invalid input",
+            details: errors.array(),
+          },
+        });
+      }
+
+      const {
+        code,
+        name,
+        description,
+        credits = 3,
+        semester,
+        academicYear,
+        lecturerId,
+      } = req.body;
+
+      // Check if course code already exists
+      const existingCourse = await prisma.course.findUnique({
+        where: { code: code.toUpperCase() },
+      });
+
+      if (existingCourse) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: "CONFLICT",
+            message: "Course code already exists",
+          },
+        });
+      }
+
+      // Verify lecturer exists
+      if (lecturerId) {
+        const lecturer = await prisma.user.findFirst({
+          where: {
+            id: lecturerId,
+            role: "lecturer",
+            isActive: true,
+          },
+        });
+
+        if (!lecturer) {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Lecturer not found or inactive",
+            },
+          });
+        }
+      }
+
+      const course = await prisma.course.create({
+        data: {
+          code: code.toUpperCase(),
+          name,
+          description,
+          credits,
+          semester: semester || new Date().getFullYear().toString(),
+          academicYear:
+            academicYear ||
+            `${new Date().getFullYear()}-${new Date().getFullYear() + 1}`,
+          lecturerId,
+          isActive: true,
+        },
+        include: {
+          lecturer: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "CREATE_COURSE",
+          entity: "Course",
+          entityId: course.id,
+          newValues: { code, name, credits, lecturerId },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      logger.info(`Course created by ${req.user.email}: ${code} - ${name}`);
+
+      res.status(201).json({
+        success: true,
+        data: course,
+        message: "Course created successfully",
+      });
+    } catch (error) {
+      logger.error("Create course error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Update course
+   * PATCH /api/v1/admin/courses/:courseId
+   */
+  async updateCourse(req, res, next) {
+    try {
+      const { courseId } = req.params;
+      const {
+        name,
+        lecturerId,
+        credits,
+        description,
+        isActive,
+        semester,
+        academicYear,
+      } = req.body;
+
+      const existingCourse = await prisma.course.findUnique({
+        where: { id: courseId },
+      });
+
+      if (!existingCourse) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Course not found" },
+        });
+      }
+
+      if (lecturerId && lecturerId !== existingCourse.lecturerId) {
+        const lecturer = await prisma.user.findFirst({
+          where: {
+            id: lecturerId,
+            role: "lecturer",
+            isActive: true,
+          },
+        });
+
+        if (!lecturer) {
+          return res.status(404).json({
+            success: false,
+            error: {
+              code: "NOT_FOUND",
+              message: "Lecturer not found or inactive",
+            },
+          });
+        }
+      }
+
+      const course = await prisma.course.update({
+        where: { id: courseId },
+        data: {
+          ...(name && { name }),
+          ...(lecturerId && { lecturerId }),
+          ...(credits && { credits }),
+          ...(description !== undefined && { description }),
+          ...(isActive !== undefined && { isActive }),
+          ...(semester && { semester }),
+          ...(academicYear && { academicYear }),
+        },
+        include: {
+          lecturer: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "UPDATE_COURSE",
+          entity: "Course",
+          entityId: courseId,
+          oldValues: {
+            name: existingCourse.name,
+            lecturerId: existingCourse.lecturerId,
+            isActive: existingCourse.isActive,
+          },
+          newValues: { name, lecturerId, isActive },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      // Invalidate cache
+      if (redisClient && redisClient.isReady) {
+        await redisClient.del(`course:${courseId}`);
+      }
+
+      logger.info(
+        `Course updated by ${req.user.email}: ${existingCourse.code}`,
+      );
+
+      res.json({
+        success: true,
+        data: course,
+        message: "Course updated successfully",
+      });
+    } catch (error) {
+      logger.error("Update course error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Deactivate course
+   * DELETE /api/v1/admin/courses/:courseId
+   */
+  async deactivateCourse(req, res, next) {
+    try {
+      const { courseId } = req.params;
+
+      const course = await prisma.course.findUnique({
+        where: { id: courseId },
+        include: {
+          sessions: {
+            where: { status: "active" },
+          },
+        },
+      });
+
+      if (!course) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Course not found" },
+        });
+      }
+
+      if (course.sessions.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "ACTIVE_SESSIONS",
+            message: "Cannot deactivate course with active sessions",
+          },
+        });
+      }
+
+      const updatedCourse = await prisma.course.update({
+        where: { id: courseId },
+        data: { isActive: false },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "DEACTIVATE_COURSE",
+          entity: "Course",
+          entityId: courseId,
+          oldValues: { isActive: true },
+          newValues: { isActive: false },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      logger.info(`Course deactivated by ${req.user.email}: ${course.code}`);
+
+      res.json({
+        success: true,
+        data: {
+          id: courseId,
+          code: course.code,
+          name: course.name,
+          isActive: false,
+        },
+        message: "Course deactivated successfully",
+      });
+    } catch (error) {
+      logger.error("Deactivate course error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Enroll students in course
+   * POST /api/v1/admin/courses/:courseId/enrollments
+   */
+  async enrollStudents(req, res, next) {
+    try {
+      const { courseId } = req.params;
+      const { studentIds } = req.body;
+
+      const course = await prisma.course.findUnique({
+        where: { id: courseId, isActive: true },
+        select: { id: true, code: true, name: true },
+      });
+
+      if (!course) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Course not found" },
+        });
+      }
+
+      const students = await prisma.user.findMany({
+        where: {
+          id: { in: studentIds },
+          role: "student",
+          isActive: true,
+        },
+        select: { id: true, fullName: true, email: true },
+      });
+
+      let enrolled = 0;
+      let alreadyEnrolled = 0;
+
+      for (const student of students) {
+        try {
+          await prisma.enrollment.create({
+            data: {
+              studentId: student.id,
+              courseId,
+              isActive: true,
+            },
+          });
+          enrolled++;
+        } catch (error) {
+          if (error.code === "P2002") {
+            alreadyEnrolled++;
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "ENROLL_STUDENTS",
+          entity: "Course",
+          entityId: courseId,
+          newValues: { enrolled, alreadyEnrolled },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      logger.info(
+        `${enrolled} students enrolled in course ${course.code} by ${req.user.email}`,
+      );
+
+      res.json({
+        success: true,
+        data: {
+          course,
+          enrolled,
+          alreadyEnrolled,
+          message: `${enrolled} students enrolled successfully`,
+        },
+      });
+    } catch (error) {
+      logger.error("Enroll students error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Remove student from course
+   * DELETE /api/v1/admin/courses/:courseId/enrollments/:studentId
+   */
+  async removeStudent(req, res, next) {
+    try {
+      const { courseId, studentId } = req.params;
+
+      const enrollment = await prisma.enrollment.findFirst({
+        where: {
+          studentId,
+          courseId,
+          isActive: true,
+        },
+      });
+
+      if (!enrollment) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Enrollment not found" },
+        });
+      }
+
+      await prisma.enrollment.update({
+        where: { id: enrollment.id },
+        data: {
+          isActive: false,
+          droppedAt: new Date(),
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "REMOVE_STUDENT",
+          entity: "Enrollment",
+          entityId: enrollment.id,
+          newValues: { studentId, courseId, isActive: false },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      logger.info(`Student removed from course by ${req.user.email}`);
+
+      res.json({
+        success: true,
+        data: { message: "Student removed from course successfully" },
+      });
+    } catch (error) {
+      logger.error("Remove student error:", error);
+      next(error);
+    }
+  }
+
+  // Add these methods to your AdminController class in admin.controller.js
+
+  // ==================== CLASSROOM MANAGEMENT METHODS ====================
+
+  /**
+   * List all classrooms
+   * GET /api/v1/admin/classrooms
+   */
+  async listClassrooms(req, res, next) {
+    try {
+      const { page = 1, limit = 20, building, isActive = true } = req.query;
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const take = parseInt(limit);
+
+      const where = { isActive: isActive === "true" };
+      if (building) {
+        where.building = { contains: building, mode: "insensitive" };
+      }
+
+      const [classrooms, total] = await Promise.all([
+        prisma.classroom.findMany({
+          where,
+          include: {
+            _count: {
+              select: {
+                sessions: {
+                  where: { status: "active" },
+                },
+              },
+            },
+          },
+          orderBy: { name: "asc" },
+          skip,
+          take,
+        }),
+        prisma.classroom.count({ where }),
+      ]);
+
+      // Add additional statistics
+      const classroomsWithStats = await Promise.all(
+        classrooms.map(async (classroom) => {
+          const totalSessions = await prisma.session.count({
+            where: { classroomId: classroom.id },
+          });
+
+          const activeSessions = await prisma.session.count({
+            where: {
+              classroomId: classroom.id,
+              status: "active",
+            },
+          });
+
+          const totalCheckins = await prisma.roomCheckin.count({
+            where: {
+              session: { classroomId: classroom.id },
+            },
+          });
+
+          const lastUsed = await prisma.session.findFirst({
+            where: { classroomId: classroom.id },
+            orderBy: { startedAt: "desc" },
+            select: { startedAt: true },
+          });
+
+          return {
+            ...classroom,
+            statistics: {
+              totalSessions,
+              activeSessions,
+              totalCheckins,
+              lastUsed: lastUsed?.startedAt || null,
+              utilizationRate:
+                totalSessions > 0 ? (activeSessions / totalSessions) * 100 : 0,
+            },
+          };
+        }),
+      );
+
+      res.json({
+        success: true,
+        data: classroomsWithStats,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit)),
+          hasNextPage: skip + take < total,
+          hasPrevPage: page > 1,
+        },
+      });
+    } catch (error) {
+      logger.error("List classrooms error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Create new classroom
+   * POST /api/v1/admin/classrooms
+   */
+  async createClassroom(req, res, next) {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Invalid input",
+            details: errors.array(),
+          },
+        });
+      }
+
+      const {
+        name,
+        building,
+        code,
+        capacity,
+        latitude,
+        longitude,
+        radiusM = 50,
+      } = req.body;
+
+      // Check if classroom code already exists
+      if (code) {
+        const existingClassroom = await prisma.classroom.findUnique({
+          where: { code: code.toUpperCase() },
+        });
+
+        if (existingClassroom) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: "CONFLICT",
+              message: "Classroom code already exists",
+            },
+          });
+        }
+      }
+
+      const classroom = await prisma.classroom.create({
+        data: {
+          name,
+          building,
+          code: code ? code.toUpperCase() : null,
+          capacity: capacity || null,
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          radiusM: parseInt(radiusM),
+          isActive: true,
+        },
+      });
+
+      // Create audit log
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "CREATE_CLASSROOM",
+          entity: "Classroom",
+          entityId: classroom.id,
+          newValues: {
+            name,
+            building,
+            code,
+            capacity,
+            latitude,
+            longitude,
+            radiusM,
+          },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      // Invalidate cache
+      if (redisClient && redisClient.isReady) {
+        await redisClient.del("admin:classrooms:list");
+      }
+
+      logger.info(`Classroom created by ${req.user.email}: ${name}`);
+
+      res.status(201).json({
+        success: true,
+        data: classroom,
+        message: "Classroom created successfully",
+      });
+    } catch (error) {
+      logger.error("Create classroom error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Update classroom
+   * PATCH /api/v1/admin/classrooms/:classroomId
+   */
+  async updateClassroom(req, res, next) {
+    try {
+      const { classroomId } = req.params;
+      const {
+        name,
+        building,
+        code,
+        capacity,
+        latitude,
+        longitude,
+        radiusM,
+        isActive,
+      } = req.body;
+
+      const existingClassroom = await prisma.classroom.findUnique({
+        where: { id: classroomId },
+      });
+
+      if (!existingClassroom) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Classroom not found" },
+        });
+      }
+
+      // Check code uniqueness if changing
+      if (code && code !== existingClassroom.code) {
+        const codeExists = await prisma.classroom.findUnique({
+          where: { code: code.toUpperCase() },
+        });
+
+        if (codeExists) {
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: "CONFLICT",
+              message: "Classroom code already exists",
+            },
+          });
+        }
+      }
+
+      const classroom = await prisma.classroom.update({
+        where: { id: classroomId },
+        data: {
+          ...(name && { name }),
+          ...(building !== undefined && { building }),
+          ...(code && { code: code.toUpperCase() }),
+          ...(capacity !== undefined && { capacity: capacity || null }),
+          ...(latitude !== undefined && { latitude: parseFloat(latitude) }),
+          ...(longitude !== undefined && { longitude: parseFloat(longitude) }),
+          ...(radiusM && { radiusM: parseInt(radiusM) }),
+          ...(isActive !== undefined && { isActive }),
+        },
+      });
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "UPDATE_CLASSROOM",
+          entity: "Classroom",
+          entityId: classroomId,
+          oldValues: {
+            name: existingClassroom.name,
+            building: existingClassroom.building,
+            code: existingClassroom.code,
+            capacity: existingClassroom.capacity,
+            isActive: existingClassroom.isActive,
+          },
+          newValues: { name, building, code, capacity, isActive },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      // Invalidate caches
+      if (redisClient && redisClient.isReady) {
+        await redisClient.del(`classroom:${classroomId}`);
+        await redisClient.del("admin:classrooms:list");
+      }
+
+      logger.info(`Classroom updated by ${req.user.email}: ${classroom.name}`);
+
+      res.json({
+        success: true,
+        data: classroom,
+        message: "Classroom updated successfully",
+      });
+    } catch (error) {
+      logger.error("Update classroom error:", error);
+      next(error);
+    }
+  }
+
+  /**
+   * Delete/Deactivate classroom
+   * DELETE /api/v1/admin/classrooms/:classroomId
+   */
+  async deleteClassroom(req, res, next) {
+    try {
+      const { classroomId } = req.params;
+      const { force = false } = req.query;
+
+      const classroom = await prisma.classroom.findUnique({
+        where: { id: classroomId },
+        include: {
+          sessions: {
+            where: { status: "active" },
+            include: { course: true },
+          },
+        },
+      });
+
+      if (!classroom) {
+        return res.status(404).json({
+          success: false,
+          error: { code: "NOT_FOUND", message: "Classroom not found" },
+        });
+      }
+
+      // Check for active sessions
+      if (classroom.sessions.length > 0 && !force) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: "ACTIVE_SESSIONS",
+            message: "Cannot delete classroom with active sessions",
+            data: {
+              activeSessions: classroom.sessions.map((s) => ({
+                id: s.id,
+                sessionCode: s.sessionCode,
+                courseName: s.course.name,
+              })),
+            },
+          },
+        });
+      }
+
+      // Soft delete - deactivate classroom
+      const updatedClassroom = await prisma.classroom.update({
+        where: { id: classroomId },
+        data: { isActive: false },
+      });
+
+      // If force delete, also deactivate all active sessions
+      if (force && classroom.sessions.length > 0) {
+        await prisma.session.updateMany({
+          where: { classroomId, status: "active" },
+          data: {
+            status: "expired",
+            checkinOpen: false,
+          },
+        });
+      }
+
+      await prisma.auditLog.create({
+        data: {
+          userId: req.user.id,
+          action: "DELETE_CLASSROOM",
+          entity: "Classroom",
+          entityId: classroomId,
+          oldValues: { isActive: true },
+          newValues: { isActive: false },
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        },
+      });
+
+      if (redisClient && redisClient.isReady) {
+        await redisClient.del(`classroom:${classroomId}`);
+        await redisClient.del("admin:classrooms:list");
+      }
+
+      logger.info(
+        `Classroom deactivated by ${req.user.email}: ${classroom.name}`,
+      );
+
+      res.json({
+        success: true,
+        data: {
+          id: classroomId,
+          name: classroom.name,
+          isActive: false,
+          ...(force &&
+            classroom.sessions.length > 0 && {
+              deactivatedSessions: classroom.sessions.length,
+            }),
+        },
+        message: force
+          ? "Classroom deactivated and associated sessions closed"
+          : "Classroom deactivated successfully",
+      });
+    } catch (error) {
+      logger.error("Delete classroom error:", error);
+      next(error);
+    }
+  }
 }
 
 module.exports = new AdminController();

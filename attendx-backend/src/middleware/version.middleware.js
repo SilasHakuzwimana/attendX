@@ -1,3 +1,5 @@
+const config = require("../config");
+
 const versionMiddleware = (req, res, next) => {
   // Extract version from URL
   const version = req.baseUrl.includes("/v1") ? "v1" : "legacy";

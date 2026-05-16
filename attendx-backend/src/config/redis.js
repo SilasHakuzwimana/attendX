@@ -1,5 +1,5 @@
 const Redis = require("ioredis");
-const config = require("./index");
+const config = require("../config/index");
 const logger = require("../utils/logger");
 
 let redisClient = null;
@@ -28,10 +28,26 @@ const initRedis = async () => {
   isConnecting = true;
 
   try {
-    const redisUrl =
-      config.redis?.url || process.env.REDIS_URL || "redis://localhost:6379";
+    const redisPass = process.env.REDIS_PASSWORD || config.redis?.password;
+    const redisHost =
+      process.env.REDIS_HOST || config.redis?.host || "localhost";
+    const redisPort = process.env.REDIS_PORT || config.redis?.port || 6379;
 
-    redisClient = new Redis(redisUrl, {
+    // Fix: Proper Redis URL format
+    let redisUrl;
+    if (redisPass) {
+      redisUrl = `redis://:${redisPass}@${redisHost}:${redisPort}`;
+    } else {
+      redisUrl = `redis://${redisHost}:${redisPort}`;
+    }
+
+    const finalRedisUrl = process.env.REDIS_URL || redisUrl;
+
+    logger.info(
+      `Connecting to Redis at ${redisHost}:${redisPort}${redisPass ? " with password" : ""}`,
+    );
+
+    redisClient = new Redis(finalRedisUrl, {
       // Connection settings
       retryStrategy: (times) => {
         if (times > MAX_RECONNECT_ATTEMPTS) {

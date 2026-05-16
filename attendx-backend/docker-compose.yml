@@ -31,13 +31,15 @@ services:
     image: redis:7-alpine
     container_name: attendx_redis
     restart: unless-stopped
+    environment:
+      - REDIS_PASSWORD="attendx_redis"
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    command: redis-server --appendonly yes --requirepass attendx_redis_pass
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "attendx_redis_pass", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -60,8 +62,9 @@ services:
     environment:
       - NODE_ENV=development # production for live
       - PORT=3000
+      - HOST=0.0.0.0
       - DATABASE_URL=postgresql://attendx_user:attendx_pass@postgres:5432/attendx_db?schema=public
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - REDIS_URL=redis://:attendx_redis_pass@redis:6379
       - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
       - JWT_ACCESS_EXPIRY=1h

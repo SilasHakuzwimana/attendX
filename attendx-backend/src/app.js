@@ -17,7 +17,7 @@ const logger = require("./utils/logger");
 const { initRedis, getRedisHealth } = require("./config/redis");
 
 // Import routes
-const routes = require("./routes");
+let routes = require("./routes");
 
 const app = express();
 
@@ -320,7 +320,6 @@ app.get("/api/v1/changelog", (req, res) => {
 // ==================== MOUNT API ROUTES ====================
 
 // Mount routes with version prefix
-app.use("/api", routes);
 app.use("/api/v1", routes);
 
 // ==================== 404 HANDLER ====================

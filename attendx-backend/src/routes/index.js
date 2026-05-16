@@ -42,6 +42,9 @@ router.use((req, res, next) => {
   next();
 });
 
+router.get("/test", (req, res) => {
+  res.json({ mess: "Hi" });
+});
 // Route version info
 router.get("/version", (req, res) => {
   res.json({

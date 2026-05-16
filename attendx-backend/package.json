@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
+    "railway:start":"pnpm run migrate:deploy && pnpm start",
     "generate": "prisma generate",
     "seed": "node prisma/seed.js",
     "lint": "eslint src",
@@ -53,7 +54,8 @@
     "socket.io": "^4.7.4",
     "twilio": "^4.19.3",
     "uuid": "^9.0.1",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "wscat": "^6.1.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",

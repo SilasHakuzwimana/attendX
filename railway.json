@@ -1,0 +1,10 @@
+{
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "attendx-backend/Dockerfile"
+  },
+  "deploy": {
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 100
+  }
+}
